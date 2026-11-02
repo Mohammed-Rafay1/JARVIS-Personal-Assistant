@@ -70,7 +70,8 @@ class Jarvis:
         self.mode = "off"             # audio thread mode: off | wake | capture
         self.muted = False
         self.pending: dict | None = None
-        self.history: deque[dict] = deque(maxlen=12)
+        self.history: deque[dict] = deque(maxlen=8)  # a shorter prompt answers faster on this CPU
+        self._last_chat = 0.0
         self.follow_up = False
         self.speak_aloud = True
         self.task: asyncio.Task | None = None
@@ -80,6 +81,7 @@ class Jarvis:
         self._preroll: deque[np.ndarray] = deque(maxlen=8)
         self._heard: list[np.ndarray] = []   # frames of the utterance being recognised right now
         self._recognising = False
+        self._heard_conf = 0.0          # recogniser confidence of the last spoken request
         self._speech_q: asyncio.Queue | None = None
         self.notices: list[dict] = []
         self.in_call = False          # a "call" = continuous conversation after a wake, until stop/close
@@ -491,6 +493,7 @@ class Jarvis:
             if gen == self._speech_gen:
                 self._recognising = False
         self.last_stt = time.perf_counter() - t0
+        self._heard_conf = self.stt.last_conf
         if not text:  # noise or background chatter: keep listening quietly
             self._go_idle()
             return
@@ -534,6 +537,7 @@ class Jarvis:
             self.speak_aloud = self.in_call or bool(self.cfg.get("speak_typed_replies", False))
             self.ui.send({"type": "transcript", "text": text, "final": True})
         t = normalize(text)
+        conf, self._heard_conf = self._heard_conf, 0.0
         log.info("user: %r -> %r", text, t)
         if not t:  # just "Hey Jarvis" (e.g. said again mid-call): acknowledge and keep listening
             await self.say("Yes?", then_idle=True)
@@ -557,6 +561,11 @@ class Jarvis:
             if named:
                 intents = [Intent("claude_project_status", {"project": named.cwd})]
         if intents == [None]:
+            if not typed and len(t.split()) <= 3 and conf < -0.7:
+                # a mumbled fragment ("Yeah, this.") once kept the model busy for a minute; ask instead
+                log.info("unsure fragment not sent to the model: %r (%.2f)", text, conf)
+                await self.say(f"Sorry, {self.cfg['address_as']}, I didn't catch that.", then_idle=True)
+                return
             await self._chat(text)
             return
         results = []
@@ -992,17 +1001,28 @@ class Jarvis:
                                             "Commands like opening apps and playing music still work.", ok=False)])
                 return
         self._set_state("thinking")
-        if not await self.llm.loaded():
+        cold = not await self.llm.loaded()
+        if cold:
             self.ui.send({"type": "reply", "text": "", "append": False})
             self._queue_speech("One moment.")  # cold start takes a while on this CPU; don't leave silence
+        if time.monotonic() - self._last_chat > 600:
+            self.history.clear()  # a question from ten minutes ago only slows the model down now
+        self._last_chat = time.monotonic()
         self.history.append({"role": "user", "content": text})
         buf, spoken, tool_results = "", [], []
         # The 3B model gets confused by tool schemas on plain questions (it emits broken tool calls),
         # and they cost ~700 prompt tokens. Only offer tools when the request sounds like an action.
         tools = llm_tools() if _ACTION_WORDS.search(text.lower()) else []
+        c = self.cfg["llm"]
+        # Never "think" forever: a stuck or overloaded model once left the call on "thinking" for a minute
+        first_wait = float(c.get("first_reply_seconds", 20)) + (25 if cold else 0)
+        filler = None if cold else asyncio.get_running_loop().call_later(
+            float(c.get("filler_after_seconds", 4)), lambda: not spoken and self._queue_speech("Just a moment, sir."))
         try:
             for attempt in range(2):
-                async for kind, data in self.llm.chat(list(self.history), tools):
+                async for kind, data in _deadline(self.llm.chat(list(self.history), tools), first_wait,
+                                                  float(c.get("gap_seconds", 15))):
+                    filler and filler.cancel()
                     if kind == "tool":
                         name, args = data
                         tool_results.append(await self.run_tool(name, {k: str(v) for k, v in args.items()}))
@@ -1021,10 +1041,21 @@ class Jarvis:
                 tools = []
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            log.warning("llm gave up after waiting (cold=%s, tools=%s): %r", cold, bool(tools), text)
+            if not spoken and not buf.strip() and not tool_results:
+                self.history.pop()
+                await self._deliver([Result(f"Sorry, {self.cfg['address_as']}, that's taking me too long. "
+                                            "Please ask me again, or say it a little differently.", ok=False)])
+                return
         except Exception as e:
             log.exception("llm failed")
+            if not spoken:
+                self.history.pop()
             await self._deliver([Result(f"My brain hiccupped: {str(e)[:60]}.", ok=False)])
             return
+        finally:
+            filler and filler.cancel()
         if buf.strip():
             spoken.append(buf.strip())
             self._queue_speech(buf.strip())
@@ -1190,6 +1221,23 @@ class Jarvis:
             if self.ducker:
                 self.ducker.restore()
             asyncio.get_running_loop().stop()
+
+
+async def _deadline(stream, first: float, gap: float):
+    """Pass a model's stream through, but raise TimeoutError if the first item takes longer than
+    `first` seconds or any later one longer than `gap`. Closing the stream makes Ollama stop
+    generating, so an abandoned answer doesn't keep the CPU busy for the next request."""
+    wait = first
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(stream.__anext__(), wait)
+            except StopAsyncIteration:
+                return
+            wait = gap
+            yield item
+    finally:
+        await stream.aclose()
 
 
 def _quietly(what: str) -> None:

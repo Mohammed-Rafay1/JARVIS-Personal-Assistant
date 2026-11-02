@@ -52,6 +52,8 @@ llm:
   model: qwen2.5:3b
   host: http://127.0.0.1:11434
   keep_alive: 30m            # unloads from RAM (~2.3 GB) after this much idle time
+  first_reply_seconds: 20    # give up (and say so) if the answer hasn't started by then; +25 s when the model is still loading
+  filler_after_seconds: 4    # say "Just a moment, sir." if the answer is slower than this
 
 music:
   default_service: youtube   # used for "play X" with no service named: youtube | spotify
