@@ -1,6 +1,6 @@
 # JARVIS plan: review and v1.1 revisions
 
-This reviews `JARVIS_IMPLEMENTATION_PLAN.md` against the laptop it will actually run on, then lists the changes that went into the build.
+This reviews the original implementation plan (kept private) against the laptop it will actually run on, then lists the changes that went into the build.
 
 ## The machine
 

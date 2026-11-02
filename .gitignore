@@ -11,3 +11,6 @@ __pycache__/
 
 # local tooling (machine-specific paths)
 .claude/
+
+# original planning notes (kept private)
+JARVIS_IMPLEMENTATION_PLAN.md
