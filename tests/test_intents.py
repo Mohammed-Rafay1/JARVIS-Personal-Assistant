@@ -183,3 +183,25 @@ def test_misheard_wake_name_is_dropped(spoken, tool):
 
 def test_real_name_without_command_is_kept():
     assert normalize("Davis is late today") == "davis is late today"
+
+
+@pytest.mark.parametrize("spoken,tool,args", [
+    # everyday phrasings from the log that used to become a file search or a slow model call
+    ("Jarvis find Mustafa and send him a text hi.", "whatsapp_message", {"contact": "mustafa", "message": "hi"}),
+    ("Find Mustafa on WhatsApp and send him text-high.", "whatsapp_message", {"contact": "mustafa"}),
+    ("Can you send a text to someone on WhatsApp?", "whatsapp_ask", {"contact": ""}),
+    ("Please send a text on WhatsApp.", "whatsapp_ask", {"contact": ""}),
+    ("send a message to Ali", "whatsapp_ask", {"contact": "ali"}),
+    ("text Mustafa that I am late", "whatsapp_message", {"contact": "mustafa", "message": "i am late"}),
+    ("send Ali a message on WhatsApp saying hello", "whatsapp_message", {"contact": "ali", "message": "hello"}),
+    ("send a text to Ali Khan saying see you at 5", "whatsapp_message", {"contact": "ali khan"}),
+    ("send a text saying I'm on my way", "whatsapp_ask", {"contact": "", "message": "i'm on my way"}),
+    ("Check WhatsApp and tell me which text I have received", "say", {}),
+    ("send an email to Ali", "email_ask_content", {"to": "ali"}),
+    ("find my CV", "open_file", {"query": "cv"}),
+])
+def test_texting_phrasings(spoken, tool, args):
+    got = parse(spoken)
+    assert got is not None and got.tool == tool
+    for k, v in args.items():
+        assert got.args.get(k) == v

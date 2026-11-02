@@ -168,7 +168,7 @@ _SAYING = r"(?:that|saying|to say|and say|and tell (?:him|her|them)|telling (?:h
 def _whatsapp(t: str) -> Intent | None:
     """'WhatsApp Ali that I'm running late', 'send a WhatsApp message to Sara', 'message Basit on WhatsApp'."""
     if not re.search(r"\b" + _WA + r"\b", t) and not re.match(r"^(?:message|text) ", t):
-        return None
+        return _texting(t)
     m = re.match(r"^(?:send |write )?(?:a |an )?" + _WA + r"(?: message)? (?:to )?(?P<to>[\w .'-]+?)"
                  r"(?: on " + _WA + r")? " + _SAYING + r" (?P<msg>.+)$", t) \
         or re.match(r"^(?:message|text) (?P<to>[\w .'-]+?) on " + _WA + r" " + _SAYING + r" (?P<msg>.+)$", t)
@@ -179,7 +179,50 @@ def _whatsapp(t: str) -> Intent | None:
     if m:
         to = (m.groupdict().get("to") or "").strip()
         return Intent("whatsapp_ask", {"contact": "" if to in ("someone", "somebody", "anyone") else to})
-    return None
+    return _texting(t)
+
+
+_NOBODY = {"", "someone", "somebody", "anyone", "him", "her", "them", "a friend"}
+
+
+def _texting(t: str) -> Intent | None:
+    """Everyday ways of asking for a message, from the log: "find Mustafa and send him a text hi",
+    "send a text to someone on WhatsApp", "send Ali a message on WhatsApp saying hello", "text Ali that
+    I'm late". Email has its own words, so anything mentioning mail is left to the email parser."""
+    if re.search(r"\b(?:e-?mails?|mail|inbox|gmail)\b", t):
+        return None
+    has_wa = re.search(r"\b" + _WA + r"\b", t)
+    s = re.sub(r"\s*\b(?:on|in|via|through|using|over) " + _WA + r"\b", "", t).strip()
+    if has_wa and re.search(r"\b(?:check|read|any|new|received|unread|got|show)\b", s) \
+            and not re.search(r"\b(?:send|write|drop|text|message)\b(?! i have)", s.replace("text i have", "")):
+        return Intent("say", {"text": "I can't read your WhatsApp messages yet, sir. I can send one for you: "
+                                      "just tell me who to message."})
+    to = ""
+    m = re.match(r"^(?:find|search for|look for|look up|go to|open) (?P<to>[\w .'-]+?)(?:'s chat)? and (?P<rest>.+)$", s)
+    if m:
+        to, s = m.group("to"), m.group("rest")
+    msg = ""
+    m = re.match(r"^(?:send|write|drop)(?: (?P<to>(?!an?\b|the\b)[\w'-]+(?: (?!an?\b)[\w'-]+)?))? (?:a |an )?(?:quick )?"
+                 r"(?:text|message|msg|text message)\b(?P<after>.*)$", s)
+    if m:
+        to = to if (m.group("to") or "") in _NOBODY else m.group("to")
+        after = m.group("after").strip()
+        k = re.match(r"^to (?P<to>[\w .'-]+?)(?: " + _SAYING + r" (?P<msg>.+))?$", after)
+        if k:
+            to = k.group("to") if to in _NOBODY else to
+            msg = k.group("msg") or ""
+        else:
+            msg = re.sub(r"^(?:" + _SAYING + r"|saying|says|:|,)\s*", "", after)
+    else:
+        m = re.match(r"^(?:text|message) (?P<to>(?!me\b)[\w'-]+(?: [\w'-]+)?)(?:(?: " + _SAYING + r"|,|:) (?P<msg>.+))?$", s)
+        if not m or not (has_wa or m.group("msg")):  # "message Ali" alone is too vague without WhatsApp
+            return None
+        to, msg = m.group("to"), m.group("msg") or ""
+    to = "" if to.strip() in _NOBODY else to.strip()
+    msg = msg.strip(" -,:")
+    if to and msg:
+        return Intent("whatsapp_message", {"contact": to, "message": msg})
+    return Intent("whatsapp_ask", {"contact": to, "message": msg})
 
 
 def _email(t: str) -> Intent | None:

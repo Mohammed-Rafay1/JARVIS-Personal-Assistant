@@ -584,6 +584,9 @@ class Jarvis:
                                       card={"kind": "capabilities",
                                                   "groups": [{"title": t, "items": i} for t, i in CAPABILITIES]}))
                 continue
+            if intent.tool == "say":  # a fixed answer, e.g. something Jarvis can't do yet
+                results.append(Result(intent.args["text"]))
+                continue
             if intent.tool == "whatsapp_ask":  # who? -> what? -> typed in WhatsApp -> "send it"
                 who = intent.args.get("contact", "")
                 if who:
@@ -593,7 +596,8 @@ class Jarvis:
                     self.ui.send({"type": "focus_input", "placeholder": "Contact name as it appears in WhatsApp…"})
                     results.append(Result("Certainly, sir. Who should I message on WhatsApp? Say or type their name "
                                           "as it appears in your chats.", icon="whatsapp",
-                                          pending={"kind": "wa_recipient"}))
+                                          pending={"kind": "wa_recipient",
+                                                   "message": intent.args.get("message", "")}))
                 continue
             if intent.tool == "email_ask_content":
                 if CTX.gmail is None:
@@ -754,6 +758,10 @@ class Jarvis:
                 await self.say("Alright.", then_idle=True)
                 return True
             who = re.sub(r"^(?:to |message |send it to )", "", raw.strip().rstrip(".?!"), flags=re.I)
+            if p.get("message"):  # "send a text saying I'm late" -> "who?" -> "Ali": the message is known
+                await self._deliver([await self.run_tool("whatsapp_message", {"contact": who,
+                                                                              "message": p["message"]})])
+                return True
             self.pending = {"kind": "wa_content", "contact": who}
             await self.say(f"What should I say to {who}?", follow=True, then_idle=False)
             return True
