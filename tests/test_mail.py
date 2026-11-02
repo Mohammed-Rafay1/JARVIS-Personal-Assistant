@@ -102,3 +102,59 @@ def test_whatsapp_chat_names():
     assert chat_name("Meta AI 03/10/2026 To cancel / remove your ChatGPT") == "Meta AI"
     assert chat_name("Family Group") == "Family Group"
     assert chat_name("Mondayy Fan Club 10:01 hi") == "Mondayy Fan Club"
+
+
+# ---------------------------------------------------------------- writing emails from instructions
+import pytest  # noqa: E402
+
+from jarvis.tools.gmail import _from_instruction, compose, looks_like_instruction  # noqa: E402
+
+
+@pytest.mark.parametrize("said,subject,text", [
+    # the email that went out word for word on 2 Nov 2026
+    ("Ask about the availability for a meeting", "Availability for a meeting",
+     "Could you please let me know your availability for a meeting?"),
+    ("ask their availability for a call tomorrow", "Availability for a call tomorrow",
+     "Could you please let me know your availability for a call tomorrow?"),
+    ("ask him if he is free on Friday", "Quick question", "Could you please let me know if you are free on Friday?"),
+    ("ask for the invoice", "Invoice", "Could you please send me the invoice?"),
+    ("ask them about the project status", "Project status",
+     "Could you please give me an update on the project status?"),
+    ("remind him to submit his timesheet", "Reminder: Submit your timesheet",
+     "Just a friendly reminder to submit your timesheet."),
+    ("follow up on the proposal", "Following up: Proposal",
+     "I'm following up on the proposal. Could you please share an update?"),
+    ("tell him the demo is at 3", "Demo is at 3", "The demo is at 3."),
+])
+def test_instruction_becomes_the_email(said, subject, text):
+    assert _from_instruction(said) == (subject, text)
+
+
+@pytest.mark.parametrize("said", [
+    "The meeting is moved to Monday",                                   # dictated: kept as said
+    "request a refund politely, mentioning the order arrived damaged",  # too nuanced for a template
+])
+def test_no_template(said):
+    assert _from_instruction(said) is None
+
+
+def test_ai_is_not_used_when_a_template_fits():
+    CTX.cfg, CTX.llm = {"email": {}}, None
+    subject, body = asyncio.run(compose("Muhammad", "Ask about the availability for a meeting"))
+    assert subject == "Availability for a meeting"
+    assert body == "Hi Muhammad,\n\nCould you please let me know your availability for a meeting?\n\nBest regards"
+    assert not looks_like_instruction("Could you please let me know your availability for a meeting?")
+
+
+def test_dictated_text_is_kept():
+    CTX.cfg, CTX.llm = {"email": {}}, None
+    _, body = asyncio.run(compose("Ali", "The meeting is moved to Monday at 10"))
+    assert "The meeting is moved to Monday at 10." in body
+
+
+def test_unwritable_instruction_is_flagged_not_hidden():
+    # no model available: the words stay, and the read-back warns that they read like an instruction
+    CTX.cfg, CTX.llm = {"email": {}}, None
+    _, body = asyncio.run(compose("Ali", "request a refund politely, mentioning the order arrived damaged"))
+    from jarvis.tools.gmail import draft_text
+    assert looks_like_instruction(draft_text(body))

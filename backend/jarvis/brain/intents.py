@@ -37,7 +37,8 @@ def normalize(text: str) -> str:
     t = re.sub(r"(?<!\w)\.|\.(?!\w)", " ", t)          # drop sentence dots, keep dots inside domains/emails
     t = re.sub(r"\s+", " ", t).strip()
     t = re.sub(r"\b([b-hj-z]) ([b-hj-z])\b", r"\1\2", t)   # spelled-out letters: "v s code" -> "vs code"
-    t = re.sub(r"\s*\bfor me\b", "", t)                     # "open youtube for me on chrome"
+    t = re.sub(r"\s*\b(?:for me|on my behalf)\b", "", t)    # "open youtube for me on chrome"
+    t = re.sub(r"\b(can|could|would|will) u\b", r"\1 you", t)  # typed shorthand: "can u send an email"
     t = re.sub(r"\bwhat'?s ?app\b", "whatsapp", t)  # Whisper's spelling of WhatsApp (not "what's up")
     for _ in range(4):  # "so, jarvis, can you play..." peels off in layers
         new = _POLITE_POST.sub("", _POLITE_PRE.sub("", _WAKE.sub("", _WAKE_NAME_CMD.sub("", t)))).strip()
@@ -250,7 +251,8 @@ def _email(t: str) -> Intent | None:
         m = re.search(r"\bto (?P<to>(?!someone|anyone|somebody|people)[\w.@'-]+(?: [\w.@'-]+)?)$", t)
         return Intent("email_ask_content", {"to": m.group("to") if m else ""})
     if re.match(r"^(?:send|write|draft|compose)(?: an| a| new| a new)? (?:e-?mail|mail)"
-                r"(?: for me| now| to (?:someone|somebody|anyone|anybody))?$", t):
+                r"(?: for me| now| to (?:someone|somebody|anyone|anybody))?$", t) \
+            or re.match(r"^(?:e-?mail|mail) (?:someone|somebody|anyone|anybody)$", t):
         return Intent("email_ask_content", {"to": ""})
     m = re.match(r"^(?:send|write|draft|compose)(?: an| a)? (?:e-?mail|mail) to "
                  r"(?P<to>(?!(?:someone|somebody|anyone|anybody)\b)[\w.@'-]+(?: [\w.@'-]+)?)$", t)

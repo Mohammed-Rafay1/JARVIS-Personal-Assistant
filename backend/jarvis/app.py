@@ -629,8 +629,9 @@ class Jarvis:
                                           pending={"kind": "email_content", "to": to}))
                 else:  # step 1 of the guided email: who? (typing is easiest for an address)
                     self.ui.send({"type": "focus_input", "placeholder": "Type the email address, then Enter…"})
-                    results.append(Result("Certainly, sir. Who would you like to email? Type their address in the "
-                                          "command box, or say their name.", icon="mail",
+                    where = "Send me" if self._remote_said is not None else "Type"
+                    results.append(Result(f"Certainly, sir. Who would you like to email? {where} their address, "
+                                          "or say their name.", icon="mail",
                                           pending={"kind": "email_recipient"}))
                 continue
             if intent.tool == "ask_song":
@@ -837,7 +838,8 @@ class Jarvis:
                 await self._deliver([await self.run_tool("draft_email", {"to": t, "about": ""})])
                 return True
             self.ui.send({"type": "focus_input", "placeholder": "Type the email address, then Enter…"})
-            await self.say("I don't have an address for that name. Please type the email address in the command box.",
+            await self.say("I don't have an address for that name. Please "
+                           + ("send me" if self._remote_said is not None else "type") + " their email address.",
                            follow=True, then_idle=False)
             return True  # still waiting for the address
         if kind == "email_content":  # "What should I say to Sara?" -> your words become the email

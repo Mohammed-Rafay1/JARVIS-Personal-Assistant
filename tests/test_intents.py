@@ -230,3 +230,15 @@ def test_opening_hours_is_not_a_command():
 def test_received_question_means_email(spoken, expected):
     got = parse(spoken)
     assert (got.tool if got else None) == expected
+
+
+@pytest.mark.parametrize("spoken,to", [
+    ("Jarvis can u send email to someone on my behalf", ""),     # WhatsApp text that got "didn't get that"
+    ("can you email someone for me", ""),
+    ("could u write an email on my behalf", ""),
+    ("email someone", ""),
+    ("can you send email to Ali", "ali"),
+])
+def test_email_on_my_behalf(spoken, to):
+    got = parse(spoken)
+    assert got is not None and got.tool == "email_ask_content" and got.args["to"] == to

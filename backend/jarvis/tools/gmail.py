@@ -199,46 +199,146 @@ def resolve_recipient(name: str) -> list[tuple[str, str]]:
     return out[:4]
 
 
-def _from_dictation(about: str) -> str:
-    """Turn what you said into the email's words: "tell him the demo is at 3" -> "The demo is at 3."."""
-    t = about.strip().rstrip(".")
-    t = re.sub(r"^(?:please )?(?:tell|inform) (?:him|her|them)(?: that)? ", "", t, flags=re.I)
-    t = re.sub(r"^(?:please )?let (?:him|her|them) know(?: that)? ", "", t, flags=re.I)
-    t = re.sub(r"^(?:please )?(?:say|write)(?: that)? ", "", t, flags=re.I)
-    m = re.match(r"^(?:please )?ask (?:him|her|them) (?:if|whether) (.+)$", t, flags=re.I)
-    if m:
-        return f"Could you let me know if {m.group(1)}?"
-    m = re.match(r"^(?:please )?ask (?:him|her|them) (?:to )?(.+)$", t, flags=re.I)
-    if m:
-        return f"Could you {m.group(1)}?"
+# An instruction to Jarvis about the email, not the email's own words. "Ask about the availability for a
+# meeting" was once sent word for word, subject included.
+_INSTRUCTION = re.compile(
+    r"^(?:please |can you |could you )?(?:ask|request|remind|invite|thank|apologi[sz]e|follow up|check (?:if|whether)|"
+    r"find out|see if|tell|inform|let (?:him|her|them|\w+) know|say|write|mention|confirm|enquire|inquire)\b", re.I)
+_WHO = r"(?:(?:him|her|them|\w+) )?"   # "ask Ali about…", "ask them about…", "ask about…"
+_YOURS = {"their": "your", "his": "your", "her": "your", "theirs": "yours", "them": "you", "him": "you",
+          "they": "you", "he": "you", "she": "you", "themselves": "yourself", "himself": "yourself",
+          "herself": "yourself"}
+
+
+def _to_you(text: str) -> str:
+    """'their availability' -> 'your availability', 'if they are free' -> 'if you are free'."""
+    t = re.sub(r"\b(" + "|".join(_YOURS) + r")\b", lambda m: _YOURS[m.group(1).lower()], text, flags=re.I)
+    return re.sub(r"\byou (is|was|has|does)\b", lambda m: {"is": "you are", "was": "you were", "has": "you have",
+                                                          "does": "you do"}[m.group(1)], t)
+
+
+def _topic(text: str) -> str:
+    """A subject line from the thing asked about: 'the invoice due Friday' -> 'Invoice due Friday'."""
+    t = re.sub(r"^(?:the|a|an|my|your|their|our|his|her)\s+", "", text.strip().rstrip(".?!"), flags=re.I)
+    words = t.split()
+    t = " ".join(words[:7]) + ("…" if len(words) > 7 else "")
+    return t[:1].upper() + t[1:]
+
+
+def _sentence(t: str) -> str:
+    t = t.strip()
     t = t[:1].upper() + t[1:]
-    return t if t.endswith(("?", "!")) else t + "."
+    return t if t.endswith((".", "?", "!")) else t + "."
+
+
+def _from_instruction(about: str) -> tuple[str, str] | None:
+    """Common instructions written as the email itself, instantly and using only what you said.
+    Returns (subject, text) or None when the phrasing isn't one of these."""
+    t = re.sub(r"^(?:please |can you |could you )", "", about.strip().rstrip(".!?"), flags=re.I)
+    if len(t.split()) > 14 or re.search(r"\b(?:politely|formally|kindly|explain|mention|mentioning|because|"
+                                        r"saying|and (?:tell|ask|say|mention))\b", t, re.I):
+        return None  # more than a template can say faithfully: the AI writes it
+    m = re.match(r"^(?:ask|check with|find out from)? ?" + _WHO + r".*?\bavailab\w*\b(?:\s+(?:for|to have|to attend|to join|"
+                 r"about))?\s*(?P<x>.*)$", t, re.I)
+    if m and re.match(r"^(?:ask|check|find out|see)\b", t, re.I):
+        x = _to_you(m.group("x"))
+        return (f"Availability for {x}" if x else "Your availability",
+                f"Could you please let me know your availability{' for ' + x if x else ''}?")
+    m = re.match(r"^(?:ask|check with|find out from) " + _WHO + r"(?:if|whether) (?P<x>.+)$", t, re.I) \
+        or re.match(r"^(?:check|find out|see) (?:if|whether) (?P<x>.+)$", t, re.I)
+    if m:
+        x = _to_you(m.group("x"))
+        return "Quick question", f"Could you please let me know if {x}?"
+    m = re.match(r"^ask " + _WHO + r"(?:about|regarding|for an update on|for updates on) (?P<x>.+)$", t, re.I)
+    if m:
+        x = _to_you(m.group("x"))
+        return _topic(x), f"Could you please give me an update on {x}?"
+    m = re.match(r"^(?:ask " + _WHO + r"for|request) (?P<x>.+)$", t, re.I)
+    if m:
+        x = _to_you(m.group("x"))
+        if re.match(r"^(?:a |some )?(?:meeting|call|quick call|chat|catch-up|catch up|time)\b", x, re.I):
+            return _topic(x), f"Would you be available for {x}?"
+        return _topic(x), f"Could you please send me {x}?"
+    m = re.match(r"^ask " + _WHO + r"to (?P<x>.+)$", t, re.I)
+    if m:
+        x = _to_you(m.group("x"))
+        return f"Request: {_topic(x)}", f"Could you please {x}?"
+    m = re.match(r"^remind " + _WHO + r"(?P<how>about|of|to|that) (?P<x>.+)$", t, re.I)
+    if m:
+        how, x = m.group("how").lower(), _to_you(m.group("x"))
+        return f"Reminder: {_topic(x)}", f"Just a friendly reminder {'about' if how == 'of' else how} {x}."
+    m = re.match(r"^invite " + _WHO + r"(?:to|for) (?P<x>.+)$", t, re.I)
+    if m:
+        x = _to_you(m.group("x"))
+        return f"Invitation: {_topic(x)}", f"I'd like to invite you to {x}. Please let me know if you can make it."
+    m = re.match(r"^thank " + _WHO + r"(?:for )?(?P<x>.+)$", t, re.I)
+    if m:
+        return "Thank you", f"Thank you for {_to_you(m.group('x'))}."
+    m = re.match(r"^follow up (?:with " + _WHO + r")?(?:on|about|regarding) (?P<x>.+)$", t, re.I)
+    if m:
+        x = _to_you(m.group("x"))
+        return f"Following up: {_topic(x)}", f"I'm following up on {x}. Could you please share an update?"
+    m = re.match(r"^apologi[sz]e (?:to " + _WHO + r")?(?:for|about) (?P<x>.+)$", t, re.I)
+    if m:
+        return "Apologies", f"I'm sorry about {_to_you(m.group('x'))}."
+    m = re.match(r"^(?:tell|inform) " + _WHO + r"(?:that |about )?(?P<x>.+)$", t, re.I) \
+        or re.match(r"^let " + _WHO + r"know (?:that |about )?(?P<x>.+)$", t, re.I) \
+        or re.match(r"^(?:say|write|mention) (?:that )?(?P<x>.+)$", t, re.I)
+    if m:
+        x = _sentence(_to_you(m.group("x")))
+        return _topic(x), x
+    return None
+
+
+def looks_like_instruction(text: str) -> bool:
+    return bool(_INSTRUCTION.match(text.strip()))
 
 
 async def compose(recipient_name: str, about: str, ai: bool | None = None) -> tuple[str, str]:
-    """Subject + body. By default straight from your words (instant). The local AI rewrites it only when
-    asked ("make it more formal") or with email.ai_compose: true, because it takes ~30 s on this laptop."""
+    """Subject + body. Dictated words go in as they are; common instructions ("ask about…", "remind them
+    to…") become the email instantly from templates; other instructions are written by the local AI
+    (10-13 s here), which also rewrites on request ("make it more formal") or with email.ai_compose: true."""
     first = recipient_name.split()[0].title() if recipient_name and "@" not in recipient_name else ""
     sig = CTX.cfg.get("email", {}).get("signature", "") or "Best regards"
+    greeting = f"Hi {first}," if first else "Hi,"
+    known = _from_instruction(about)  # "ask about…", "remind them to…": instant, nothing invented
     use_ai = CTX.cfg.get("email", {}).get("ai_compose", False) if ai is None else ai
-    if use_ai and CTX.llm and await CTX.llm.available():
-        try:
-            data = await CTX.llm.json(
-                "Write a short, friendly, professional email. Return JSON with keys subject and body. "
-                "Body: greeting with the first name, 1-4 short sentences, no signature, no placeholders. "
-                "Do not add facts, dates or promises that are not in the request.",
-                f"Recipient first name: {first or 'unknown'}\nWhat to say: {about}")
-            subject, body = data.get("subject", "").strip(), data.get("body", "").strip()
-            if subject and body:
-                return subject, f"{body}\n\n{sig}"
-        except Exception as e:
-            log.warning("compose via LLM failed: %s", e)
-    text = _from_dictation(about)
-    body = (f"Hi {first},\n\n" if first else "Hi,\n\n") + text
-    words = re.sub(r"[^\w\s'-]", "", text).split()
-    subject = " ".join(words[:7]) + ("…" if len(words) > 7 else "")
-    subject = subject[:1].upper() + subject[1:]  # keep "Friday", "Q3" as written
-    return subject, f"{body}\n\n{sig}"
+    if use_ai is None or (not known and looks_like_instruction(about) and ai is not False):
+        use_ai = True  # an instruction the templates don't cover: the email has to be written, not pasted
+    if use_ai and not (known and ai is None) and CTX.llm and await CTX.llm.available():
+        written = await _write_with_ai(first, about)
+        if written:
+            return written[0], f"{greeting}\n\n{written[1]}\n\n{sig}"
+    if known:
+        subject, text = known
+    else:
+        text = _sentence(about.strip())
+        words = re.sub(r"[^\w\s'-]", "", text).split()
+        subject = " ".join(words[:7]) + ("…" if len(words) > 7 else "")
+        subject = subject[:1].upper() + subject[1:]  # keep "Friday", "Q3" as written
+    return subject, f"{greeting}\n\n{text}\n\n{sig}"
+
+
+async def _write_with_ai(first: str, about: str) -> tuple[str, str] | None:
+    """The local model writes (subject, text without greeting or sign-off), within email.ai_seconds
+    (about 10-13 s on this laptop). None if it's slow or gives something unusable."""
+    try:
+        data = await asyncio.wait_for(CTX.llm.json(
+            "Write a short, polite, professional email. Return JSON with keys subject and body. "
+            "Body: 1-3 short sentences only, no greeting line, no sign-off, no placeholders. Do not add facts, "
+            "dates, times or promises that are not in the request.",
+            f"Recipient first name: {first or 'unknown'}\nWhat the email should do: {about}"),
+            float(CTX.cfg.get("email", {}).get("ai_seconds", 20)))
+    except Exception as e:
+        log.warning("compose via LLM failed or too slow: %s", e.__class__.__name__)
+        return None
+    subject, body = str(data.get("subject", "")).strip(), str(data.get("body", "")).strip()
+    body = re.sub(r"^(?:hi|hello|dear|hey)\b[^,\n]*,\s*", "", body, flags=re.I)          # we add our own
+    body = re.sub(r"\s*(?:best regards|kind regards|regards|thanks!?|thank you!?|cheers)[,.!]?\s*$", "", body,
+                  flags=re.I).strip()
+    if not subject or not body or looks_like_instruction(body):
+        return None
+    return subject, body
 
 
 _GENERIC = {"someone", "somebody", "anyone", "anybody", "him", "her", "them", "a friend", "friend", "person",
@@ -285,7 +385,11 @@ async def make_draft(to_display: str, to_addr: str, about: str) -> Result:
     draft_id = await asyncio.to_thread(CTX.gmail.create_draft, to_addr, subject, body)
     card = {"kind": "email_draft", "id": draft_id, "to": to_addr, "to_name": who or to_addr,
             "subject": subject, "body": body}
-    return Result(f"Here's the draft to {who or to_addr}. It says: {draft_text(body)} Shall I send it?",
+    # if it still reads like an instruction to me rather than an email, say so before you approve it
+    warn = (" Note: that reads like an instruction rather than an email. Say make it formal and I'll write it "
+            "properly.") if looks_like_instruction(draft_text(body)) else ""
+    return Result(f"Here's the draft to {who or to_addr}, subject {subject}. It says: {draft_text(body)}{warn} "
+                  "Shall I send it?",
                   icon="mail", card=card,
                   pending={"kind": "send_email", "draft_id": draft_id, "to": to_addr, "to_name": who or to_addr,
                            "subject": subject, "body": body, "about": about})
