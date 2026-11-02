@@ -35,10 +35,11 @@ class Mic:
             if self.gain != 1.0:
                 frame = np.clip(frame.astype(np.float32) * self.gain, -32768, 32767).astype(np.int16)
             self.frames.put_nowait(frame)
-        except queue.Full:  # consumer stalled; drop oldest
+        except queue.Full:  # consumer stalled; drop the oldest frame and keep the newest
             try:
                 self.frames.get_nowait()
-            except queue.Empty:
+                self.frames.put_nowait(frame)
+            except (queue.Empty, queue.Full):
                 pass
 
     def _open(self) -> None:

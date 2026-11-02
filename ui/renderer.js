@@ -334,6 +334,7 @@ function handle(m) {
     case 'level': orb.setLevel(m.rms, m.bands); break;
     case 'stats': onStats(m); break;
     case 'transcript': onTranscript(m.text); break;
+    case 'unclear': $('you').textContent = "Sorry, I didn't catch that. Please say it again."; break;
     case 'reply': onReply(m.text, m.append); break;
     case 'card': showCard(m); break;
     case 'notify': toast(m); break;

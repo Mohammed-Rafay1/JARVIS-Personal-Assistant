@@ -461,6 +461,8 @@ class Jarvis:
         self._idle()
 
     def _idle(self) -> None:
+        if self.wake is not None and self.mode != "wake":
+            self.wake.reset()  # forget the audio it heard before the call, so it starts clean
         self.mode = "wake"
         self.follow_up = False
         self._set_state("idle")
@@ -495,6 +497,8 @@ class Jarvis:
         self.last_stt = time.perf_counter() - t0
         self._heard_conf = self.stt.last_conf
         if not text:  # noise or background chatter: keep listening quietly
+            if self.in_call and audio.size > MIC_SR * 0.8:
+                self.ui.send({"type": "unclear"})  # a quiet hint on screen that you weren't understood
             self._go_idle()
             return
         self.ui.send({"type": "transcript", "text": text, "final": True})
