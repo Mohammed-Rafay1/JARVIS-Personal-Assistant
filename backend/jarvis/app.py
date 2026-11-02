@@ -564,6 +564,13 @@ class Jarvis:
                                                            _project_words(t))), None)
             if named:
                 intents = [Intent("claude_project_status", {"project": named.cwd})]
+        if intents == [None] and not typed:
+            tail = _embedded_command(t)
+            if tail:  # "Take this, open WhatsApp": a misheard "Jarvis" in front of a clear command
+                hit = parse(tail, self.cfg["music"]["default_service"], self._resolve_open)
+                if hit is not None and hit.tool in _CLOSED_INTENTS | {"play_youtube", "play_spotify", "web_search"}:
+                    log.info("command found after misheard words: %r", tail)
+                    intents = [hit]
         if intents == [None]:
             if not typed and len(t.split()) <= 3 and conf < -0.7:
                 # a mumbled fragment ("Yeah, this.") once kept the model busy for a minute; ask instead
@@ -1027,7 +1034,8 @@ class Jarvis:
         tools = llm_tools() if _ACTION_WORDS.search(text.lower()) else []
         c = self.cfg["llm"]
         # Never "think" forever: a stuck or overloaded model once left the call on "thinking" for a minute
-        first_wait = float(c.get("first_reply_seconds", 20)) + (25 if cold else 0)
+        # the tool list adds ~700 prompt tokens, which take this CPU another ~15 s to read
+        first_wait = float(c.get("first_reply_seconds", 20)) + (25 if cold else 0) + (15 if tools else 0)
         filler = None if cold else asyncio.get_running_loop().call_later(
             float(c.get("filler_after_seconds", 4)), lambda: not spoken and self._queue_speech("Just a moment, sir."))
         try:
@@ -1266,6 +1274,22 @@ def _quietly(what: str) -> None:
 def _unsent_line(draft_id: str) -> str:
     # app-password drafts live only in Jarvis until sent; OAuth drafts really are in Gmail's Drafts folder
     return "Okay, not sent." if str(draft_id).startswith("local-") else "Okay, I've kept it in your Gmail drafts."
+
+
+_CMD_START = re.compile(r"\b(?:open|launch|close|play|pause|resume|search|google|lock|mute|unmute|volume|"
+                        r"what time|what's the time|check my|check (?:the )?e-?mails?)\b")
+
+
+def _embedded_command(t: str) -> str | None:
+    """A short request with up to three stray words before the command ("take this open whatsapp",
+    "have this play dilruba on spotify"): the command part, or None."""
+    words = t.split()
+    if len(words) > 9:
+        return None
+    m = _CMD_START.search(t)
+    if not m or m.start() == 0 or len(t[:m.start()].split()) > 3:
+        return None
+    return t[m.start():]
 
 
 def _project_words(text: str) -> str:

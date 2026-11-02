@@ -45,3 +45,16 @@ def test_stall_mid_answer_times_out():
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(run())
     assert len(got) == 1 and log == ["closed"]
+
+
+@pytest.mark.parametrize("heard,command", [
+    ("take this open whatsapp", "open whatsapp"),          # from the log: "Jarvis, open WhatsApp"
+    ("have this play dilruba on spotify", "play dilruba on spotify"),
+    ("open whatsapp", None),                               # already a command: nothing to strip
+    ("i was going to open a shop someday with my brother in lahore", None),  # too long to guess
+    ("tell me about the time we went to open the shop", None),               # >3 words before the verb
+])
+def test_embedded_command(heard, command):
+    from jarvis.app import _embedded_command
+
+    assert _embedded_command(heard) == command
