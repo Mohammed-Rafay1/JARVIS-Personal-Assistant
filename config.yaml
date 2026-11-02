@@ -29,11 +29,13 @@ call:                        # "Hey Jarvis" opens a full-screen call that keeps 
   greeting: true             # "Good morning, sir. Systems are online. Awaiting your command. What would you like me to do?"
   barge_in: true             # start talking while Jarvis speaks and it stops to listen
   barge_in_ratio: 2.5        # how much louder than Jarvis's own echo your voice must be (raise if it interrupts itself)
+  rethink_min_rms: 1800      # how loud speech must be to interrupt Jarvis while it's thinking (raise if other voices interrupt it)
 
 stt:
   model: base.en             # fast first pass
   accurate_model: small.en   # re-checks only when the fast pass is unsure (accents, names); "" to turn off
   retry_below: -0.6          # confidence below which the re-check runs (lower = fewer re-checks, faster)
+  retry_max_seconds: 6       # longer clips skip the re-check (it took 8-20 s on them); clear commands always skip it
   compute_type: int8
   threads: 4
 

@@ -26,9 +26,10 @@ class Endpointer:
         self.noise_floor = 300.0  # int16 RMS; updated while idle
         self.reset()
 
-    def reset(self, no_speech_timeout: float | None = None) -> None:
+    def reset(self, no_speech_timeout: float | None = None, carry: list[np.ndarray] | None = None) -> None:
         if no_speech_timeout is not None:
             self.no_speech_frames = int(no_speech_timeout * 1000 / FRAME_MS)
+        self.carry = list(carry or [])  # the start of a sentence heard before a pause; kept in front of it
         self.frames: list[np.ndarray] = []
         self.started = False
         self.speech_frames = 0
@@ -79,6 +80,7 @@ class Endpointer:
 
     def audio(self) -> np.ndarray:
         """The captured utterance as float32 in [-1, 1]."""
-        if not self.frames:
+        frames = self.carry + self.frames
+        if not frames:
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate(self.frames).astype(np.float32) / 32768.0
+        return np.concatenate(frames).astype(np.float32) / 32768.0

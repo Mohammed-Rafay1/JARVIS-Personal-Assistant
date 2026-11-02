@@ -53,6 +53,10 @@ _OPENS_WINDOW = {"open_app", "open_website", "web_search", "play_youtube", "play
 _ACTION_WORDS = re.compile(r"\b(?:open|launch|start|run|play|put on|search|google|look up|find|show|go to|visit|"
                            r"navigate|emails?|e-mails?|mails?|inbox|send|write to|draft|volume|louder|quieter|"
                            r"spotify|youtube|website|folder|file|app|project|projects|claude)\b")
+# commands whose words come from a fixed list, so the fast recogniser's text is reliable enough
+_CLOSED_INTENTS = {"stop", "help", "ack", "tell_time", "set_volume", "media_control", "lock_screen",
+                   "claude_projects", "check_email", "emails_to_reply", "close_app", "open_any", "open_website",
+                   "play_spotify_liked", "email_ask_content", "whatsapp_ask", "calculate", "ask_song"}
 _THEN = re.compile(r"\s+(?:and then|then|and also|and)\s+(?=(?:open|launch|start|play|search|google|close|"
                    r"email|mute|unmute|set|turn|go to|lock|pause|check)\b)")
 
@@ -73,7 +77,9 @@ class Jarvis:
         self.mic = self.wake = self.endpointer = self.stt = self.tts = self.player = None
         self.ducker = None
         self.llm = None
-        self._preroll: deque[np.ndarray] = deque(maxlen=4)
+        self._preroll: deque[np.ndarray] = deque(maxlen=8)
+        self._heard: list[np.ndarray] = []   # frames of the utterance being recognised right now
+        self._recognising = False
         self._speech_q: asyncio.Queue | None = None
         self.notices: list[dict] = []
         self.in_call = False          # a "call" = continuous conversation after a wake, until stop/close
@@ -119,7 +125,8 @@ class Jarvis:
 
         self._status("Loading speech recognition…")
         self.stt = STT(c["stt"]["model"], c["stt"]["compute_type"], c["stt"]["threads"],
-                       c["stt"].get("accurate_model", ""), float(c["stt"].get("retry_below", -0.6)))
+                       c["stt"].get("accurate_model", ""), float(c["stt"].get("retry_below", -0.6)),
+                       float(c["stt"].get("retry_max_seconds", 6)))
         # Whisper's prompt is short, so put the words people actually say first (an alphabetical
         # app list left out "Spotify" and it heard "Supportify")
         installed = {a.lower(): a for a in CTX.apps.names()}
@@ -232,8 +239,15 @@ class Jarvis:
                 self._preroll.append(frame)
                 if self.in_call and self.state == "thinking" and self.cfg["call"].get("barge_in", True) \
                         and self._rethink_feed(frame):
-                    pre = list(self._preroll)[-5:]
-                    self.loop.call_soon_threadsafe(lambda p=pre: self._wake("barge-in", p))
+                    pre = list(self._preroll)[-6:]
+                    if self._recognising:
+                        # still working out the words: you paused mid-sentence and carried on. Keep what
+                        # you said before the pause and hear the whole sentence together.
+                        log.info("continuing the sentence after a pause")
+                        self.loop.call_soon_threadsafe(
+                            lambda p=pre, c=list(self._heard): self._wake("barge-in", p, carry=c))
+                    else:
+                        self.loop.call_soon_threadsafe(lambda p=pre: self._wake("barge-in", p))
                 elif self.state != "thinking":
                     self._rethink_run = 0
                 continue
@@ -269,6 +283,8 @@ class Jarvis:
                 if status in ("done", "timeout"):
                     self.mode = "off"
                     audio = self.endpointer.audio() if status == "done" else None
+                    if audio is not None:
+                        self._heard = self.endpointer.carry + self.endpointer.frames
                     self.loop.call_soon_threadsafe(self._utterance_ready, audio)
 
     def _barge_feed(self, frame: np.ndarray) -> bool:
@@ -294,14 +310,16 @@ class Jarvis:
         return False
 
     def _rethink_feed(self, frame: np.ndarray) -> bool:
-        """True after ~0.3 s of clear speech while Jarvis is still thinking (nothing is playing then,
-        so the bar is the room's normal noise rather than an echo)."""
+        """True after ~0.4 s of clear, close speech while Jarvis is still thinking (nothing is playing
+        then, so the bar is the room's normal noise rather than an echo). At 0.3 s and a lower level it
+        fired 61 times in the log, mostly on other voices and videos, each time throwing the answer away."""
         rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
-        if rms > max(self.endpointer.noise_floor * 3.0, 1200.0) and self.endpointer.vad_votes(frame) >= 3:
+        floor_rms = float(self.cfg["call"].get("rethink_min_rms", 1800))
+        if rms > max(self.endpointer.noise_floor * 3.5, floor_rms) and self.endpointer.vad_votes(frame) >= 3:
             self._rethink_run += 1
         else:
             self._rethink_run = 0
-        if self._rethink_run >= 4:
+        if self._rethink_run >= 5:
             self._rethink_run = 0
             log.info("interrupted while thinking (mic %.0f, floor %.0f)", rms, self.endpointer.noise_floor)
             return True
@@ -345,14 +363,16 @@ class Jarvis:
         self.state = value
         self.ui.send({"type": "state", "value": value, **extra})
 
-    def _start_capture(self, timeout: float | None, preroll: list | None = None) -> None:
-        self.endpointer.reset(timeout)
+    def _start_capture(self, timeout: float | None, preroll: list | None = None,
+                       carry: list | None = None) -> None:
+        self.endpointer.reset(timeout, carry)
         for f in preroll or []:
             self.endpointer.frames.append(f)
         self.mode = "capture"
         self._set_state("listening", follow_up=self.follow_up)
 
-    def _wake(self, source: str, preroll: list | None = None, first_text: str | None = None) -> None:
+    def _wake(self, source: str, preroll: list | None = None, first_text: str | None = None,
+              carry: list | None = None) -> None:
         """'Hey Jarvis', the hotkey or a click: start a call, or (mid-call) cut in and listen."""
         if self.muted and source == "voice":
             return
@@ -373,7 +393,7 @@ class Jarvis:
             if self.cfg["call"].get("greeting", True):
                 self.task = asyncio.create_task(self._greet())
                 return
-        self._start_capture(self._listen_timeout(), preroll)
+        self._start_capture(self._listen_timeout(), preroll, carry)
 
     async def _greet(self) -> None:
         """Opening line of every call; listening starts as soon as it finishes."""
@@ -419,6 +439,7 @@ class Jarvis:
         if self.task and not self.task.done():
             self.task.cancel()
         self.player and self.player.stop()
+        self._recognising = False
         self._speech_gen += 1  # a sentence still being synthesised is dropped instead of playing late
         if self._speech_q:
             while not self._speech_q.empty():
@@ -461,13 +482,31 @@ class Jarvis:
         self._set_state("thinking")
         self.player.play(earcons.HEARD)
         t0 = time.perf_counter()
-        text = await asyncio.to_thread(self.stt.transcribe, audio)
+        gen = self._speech_gen
+        self._recognising = True
+        try:
+            text = await asyncio.to_thread(self.stt.transcribe, audio, self._clear_command,
+                                           lambda: gen != self._speech_gen)
+        finally:
+            if gen == self._speech_gen:
+                self._recognising = False
         self.last_stt = time.perf_counter() - t0
         if not text:  # noise or background chatter: keep listening quietly
             self._go_idle()
             return
         self.ui.send({"type": "transcript", "text": text, "final": True})
         await self.handle_text(text)
+
+    def _clear_command(self, text: str) -> bool:
+        """The fast recogniser's text is a plain command, so the slow re-check can be skipped. Free text
+        (song names, messages, email wording) and answers to "shall I send it?" are always re-checked."""
+        if self.pending:
+            return False
+        t = normalize(text)
+        if not t:
+            return True
+        intent = parse(t, self.cfg["music"]["default_service"])
+        return intent is not None and intent.tool in _CLOSED_INTENTS
 
     # ------------------------------------------------------------------ understanding
     def _resolve_open(self, target: str, verb: str) -> Intent:
