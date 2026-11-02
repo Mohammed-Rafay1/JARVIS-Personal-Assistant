@@ -273,6 +273,12 @@ def _email(t: str) -> Intent | None:
         if re.search(r"\b(?:this week|recently|lately)\b", t):
             period = "recent"
         return Intent("check_email", {"period": period})
+    # "every Cheamills I have received in past 24 hours": the word "emails" misheard, but nothing else
+    # Jarvis reads arrives like that (WhatsApp reading isn't supported and says so before this)
+    if short and re.search(r"\b(?:i have|i've|have i|did i|i) (?:received|got)\b", t) \
+            and re.search(r"\b(?:what|which|every|any|all|anything|tell me|show|list)\b", t) \
+            and re.search(r"\b(?:today|yesterday|this morning|(?:past|last) \d+ hours?|(?:past|last) (?:day|hour))\b", t):
+        return Intent("check_email", {"period": "today"})
     m = re.match(r"^(?:read|summari[sz]e|open)(?: me)?(?: the| my)? (?:latest|last|newest|most recent|recent|new)? ?"
                  r"(?:e-?mail|mail|message)(?: from (?P<who>.+))?$", t) \
         or re.match(r"^what did (?P<who>.+?) (?:say|send|e-?mail|write)(?: me)?(?: about)?$", t)

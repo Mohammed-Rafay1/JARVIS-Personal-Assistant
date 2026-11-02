@@ -219,3 +219,14 @@ def test_command_verb_with_an_ending(spoken, tool):
 
 def test_opening_hours_is_not_a_command():
     assert normalize("opening hours of the bank") == "opening hours of the bank"
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    ("Jarvis, every Cheamills I have received in past 24 hours.", "check_email"),   # WhatsApp voice note
+    ("what have I received today", "check_email"),
+    ("I got a promotion today", None),
+    ("I received the parcel yesterday", None),
+])
+def test_received_question_means_email(spoken, expected):
+    got = parse(spoken)
+    assert (got.tool if got else None) == expected
