@@ -21,7 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "hotkey": "Control+Alt+J",
     "mic": {"gain": 1.0},
     "call": {"first_timeout": 8, "idle_timeout": 90, "greeting": True, "barge_in": True, "barge_in_ratio": 2.5},
-    "listening": {"silence_ms": 600, "max_seconds": 12, "no_speech_timeout": 5,
+    "listening": {"silence_ms": 600, "short_silence_ms": 1000, "max_seconds": 12, "no_speech_timeout": 5,
                   "follow_up_seconds": 6, "follow_up_after_chat": False,
                   "vad_aggressiveness": 2},
     "stt": {"model": "base.en", "accurate_model": "small.en", "retry_below": -0.6, "compute_type": "int8", "threads": 4},

@@ -16,6 +16,7 @@ mic:
 hotkey: "Control+Alt+J"      # talk or type
 listening:
   silence_ms: 600            # pause length that ends your sentence
+  short_silence_ms: 1000     # longer pause allowed after just a word or two ("Jarvis, ... open Chrome"); = silence_ms to turn off
   max_seconds: 12
   no_speech_timeout: 5       # give up if you say nothing after waking it
   follow_up_seconds: 6       # after Jarvis asks you something (send it? which file?), answer without the wake word

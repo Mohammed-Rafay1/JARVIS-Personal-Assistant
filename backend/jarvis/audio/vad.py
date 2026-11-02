@@ -14,9 +14,13 @@ class Endpointer:
     """Feed 80 ms frames; reports when an utterance has started and ended."""
 
     def __init__(self, aggressiveness: int = 2, silence_ms: int = 700, max_seconds: float = 12,
-                 no_speech_timeout: float = 5) -> None:
+                 no_speech_timeout: float = 5, short_silence_ms: int = 0) -> None:
         self.vad = webrtcvad.Vad(aggressiveness)
         self.silence_frames = max(1, silence_ms // FRAME_MS)
+        # People pause after "Jarvis," or "Send a text to..." before the rest. While only a word or two
+        # has been said, wait longer before deciding the sentence is over.
+        self.short_silence_frames = max(self.silence_frames, short_silence_ms // FRAME_MS)
+        self.short_speech_frames = 1000 // FRAME_MS
         self.max_frames = int(max_seconds * 1000 / FRAME_MS)
         self.no_speech_frames = int(no_speech_timeout * 1000 / FRAME_MS)
         self.noise_floor = 300.0  # int16 RMS; updated while idle
@@ -59,6 +63,8 @@ class Endpointer:
                 self.started = True
         else:
             self.silent_run += 1
+            if not self.started and len(self.frames) > 2:
+                self.observe_idle(frame)  # the room's noise, between turns of a call
         if not self.started:
             if len(self.frames) >= self.no_speech_frames:
                 return "timeout"
@@ -66,7 +72,8 @@ class Endpointer:
             if len(self.frames) > 8 and self.speech_frames == 0:
                 self.frames = self.frames[-8:]
             return "waiting"
-        if self.silent_run >= self.silence_frames or len(self.frames) >= self.max_frames:
+        need = self.short_silence_frames if self.speech_frames < self.short_speech_frames else self.silence_frames
+        if self.silent_run >= need or len(self.frames) >= self.max_frames:
             return "done"
         return "speaking"
 

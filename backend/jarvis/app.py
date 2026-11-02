@@ -131,7 +131,7 @@ class Jarvis:
 
         L = c["listening"]
         self.endpointer = Endpointer(L["vad_aggressiveness"], L["silence_ms"], L["max_seconds"],
-                                     L["no_speech_timeout"])
+                                     L["no_speech_timeout"], int(L.get("short_silence_ms", 0)))
         # short phrases heard while idle, for the Whisper "Hey Jarvis" backup
         self.wake_vad = Endpointer(L["vad_aggressiveness"], 450, 3.6, 10**6)
         if c["wake_word"]["enabled"]:
