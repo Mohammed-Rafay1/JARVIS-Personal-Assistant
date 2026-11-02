@@ -205,3 +205,17 @@ def test_texting_phrasings(spoken, tool, args):
     assert got is not None and got.tool == tool
     for k, v in args.items():
         assert got.args.get(k) == v
+
+
+@pytest.mark.parametrize("spoken,tool", [
+    ("Jarvis opens, Spotify.", "open_any"),           # from a WhatsApp voice note
+    ("closes chrome", "close_app"),
+    ("Playing Dilruba on YouTube", "play_youtube"),
+])
+def test_command_verb_with_an_ending(spoken, tool):
+    got = parse(spoken)
+    assert got is not None and got.tool == tool
+
+
+def test_opening_hours_is_not_a_command():
+    assert normalize("opening hours of the bank") == "opening hours of the bank"
