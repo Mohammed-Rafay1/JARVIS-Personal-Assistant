@@ -211,11 +211,18 @@ class WhatsAppRemote:
         else:
             text, conf = ev["text"], 0.0
         log.info("WhatsApp %s: %r", "voice note" if voice else "text", text)
-        said, cards = await self.jarvis.handle_remote(text, voice=voice, conf=conf)
+        from ..brain.intents import normalize
+
+        if not normalize(text):  # just "Hey Jarvis"
+            sir = self.jarvis.cfg.get("address_as", "sir")
+            said, cards = [f"At your service, {sir}. Tell me what you need, by text or voice note."], []
+        else:
+            said, cards = await self.jarvis.handle_remote(text, voice=voice, conf=conf)
         reply = " ".join(said).strip() or "Done, sir."
         parts = ([f"🎙️ _{text}_"] if voice else []) + [reply] + [c for c in cards if c]
         self.send({"type": "send", "chat": chat, "text": "\n\n".join(parts)})
         self.send({"type": "presence", "chat": chat, "state": "paused"})
+        log.info("WhatsApp reply: %r", reply[:120])
         if voice and self.cfg.get("voice_replies", True) and said:
             await self._send_voice(chat, reply)
 

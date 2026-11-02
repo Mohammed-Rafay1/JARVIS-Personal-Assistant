@@ -46,6 +46,10 @@ def normalize(text: str) -> str:
         t = new
     # "Davis played Dilruba's song on Spotify": Whisper hears the request as past tense
     t = re.sub(r"^played\b(?=.*\bon (?:spotify|youtube)$)", "play", t)
+    # "Jarvis opens Spotify", "playing Dilruba", "closes Chrome": the command verb heard with an ending
+    # ("opening hours..." is a question, so only the "-s" forms, and "playing", are taken as commands)
+    t = re.sub(r"^(open|play|close|search|launch)(?:s|es)\b", r"\1", t)
+    t = re.sub(r"^playing\b(?=.+\bon (?:spotify|youtube)$)", "play", t)
     return t
 
 

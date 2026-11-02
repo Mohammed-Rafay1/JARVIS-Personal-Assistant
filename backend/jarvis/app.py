@@ -1042,6 +1042,14 @@ class Jarvis:
         # The 3B model gets confused by tool schemas on plain questions (it emits broken tool calls),
         # and they cost ~700 prompt tokens. Only offer tools when the request sounds like an action.
         tools = llm_tools() if _ACTION_WORDS.search(text.lower()) else []
+        if tools and not self.cfg["llm"].get("use_tools", False):
+            # With the tool list the 3B model never answered within 35 s on this laptop. An action the
+            # command engine couldn't read is usually a mishearing: ask again instead of a long silence.
+            self.history.pop()
+            log.info("unparsed command not sent to the model: %r", text)
+            await self.say(f"Sorry, {self.cfg['address_as']}, I didn't get that command. Could you say it "
+                           "another way? For example, open Spotify.", then_idle=True)
+            return
         c = self.cfg["llm"]
         # Never "think" forever: a stuck or overloaded model once left the call on "thinking" for a minute
         # the tool list adds ~700 prompt tokens, which take this CPU another ~15 s to read

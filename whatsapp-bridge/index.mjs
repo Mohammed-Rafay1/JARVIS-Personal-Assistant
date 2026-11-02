@@ -78,6 +78,7 @@ async function handle(cmd) {
     if (cmd.type === 'send') {
       const r = await sock.sendMessage(cmd.chat, { text: cmd.text });
       if (r?.key?.id) remember(r.key.id);
+      log('reply delivered to WhatsApp');
     } else if (cmd.type === 'send_voice') {
       const r = await sock.sendMessage(cmd.chat, {
         audio: fs.readFileSync(cmd.path), mimetype: 'audio/ogg; codecs=opus', ptt: true,
