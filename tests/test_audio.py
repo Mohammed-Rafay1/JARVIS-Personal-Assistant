@@ -110,3 +110,12 @@ def test_carry_keeps_the_start_of_the_sentence():
     ep.feed(np.full(1280, 9, dtype=np.int16))
     audio = ep.audio()
     assert audio.size == 4 * 1280 and audio[0] == 7 / 32768.0
+
+
+def test_stt_constructs_with_a_recheck_model(monkeypatch):
+    # the real constructor, with model loading stubbed out (a shadowed import once crashed it on start)
+    import jarvis.audio.stt as stt_mod
+
+    monkeypatch.setattr(stt_mod, "_load", lambda name, ct, th: name)
+    stt = stt_mod.STT("base.en", accurate_model="small.en")
+    assert stt.model == "base.en" and stt.retry_max_seconds == 6.0

@@ -71,7 +71,6 @@ class STT:
                     log.info("STT re-check model ready: %s (%.1fs)", accurate_model, time.perf_counter() - t2)
                 except Exception as e:
                     log.warning("STT re-check model unavailable: %s", e)
-            import threading
             threading.Thread(target=load_accurate, daemon=True).start()
 
     def quick(self, audio: np.ndarray) -> str:

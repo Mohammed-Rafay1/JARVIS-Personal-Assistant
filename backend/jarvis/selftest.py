@@ -102,8 +102,9 @@ def run(cfg: dict) -> int:
 
     def gmail():
         from .tools.gmail import Gmail
+        from .tools.mail_imap import ImapMail
 
-        g = Gmail.connect()
+        g = ImapMail.connect() or Gmail.connect()  # app password first, as Jarvis itself does
         if g is None:
             raise RuntimeError("not connected")
         return g.me
