@@ -1327,8 +1327,8 @@ def _unsent_line(draft_id: str) -> str:
     return "Okay, not sent." if str(draft_id).startswith("local-") else "Okay, I've kept it in your Gmail drafts."
 
 
-_CMD_START = re.compile(r"\b(?:open|launch|close|play|pause|resume|search|google|lock|mute|unmute|volume|"
-                        r"what time|what's the time|check my|check (?:the )?e-?mails?)\b")
+_CMD_START = re.compile(r"\b(?:(?P<verb>open|launch|close|play|search)(?:s|es|ed|d)?|pause|resume|google|lock|"
+                        r"mute|unmute|volume|what time|what's the time|check my|check (?:the )?e-?mails?)\b")
 
 
 def _embedded_command(t: str) -> str | None:
@@ -1340,7 +1340,8 @@ def _embedded_command(t: str) -> str | None:
     m = _CMD_START.search(t)
     if not m or m.start() == 0 or len(t[:m.start()].split()) > 3:
         return None
-    return t[m.start():]
+    # "there is closed spotify": the verb after stray words is the command, whatever ending it was heard with
+    return (m.group("verb") + t[m.end():]) if m.group("verb") else t[m.start():]
 
 
 def _project_words(text: str) -> str:

@@ -50,6 +50,8 @@ def test_stall_mid_answer_times_out():
 @pytest.mark.parametrize("heard,command", [
     ("take this open whatsapp", "open whatsapp"),          # from the log: "Jarvis, open WhatsApp"
     ("have this play dilruba on spotify", "play dilruba on spotify"),
+    ("there is closed spotify", "close spotify"),          # WhatsApp voice note: "Jarvis, close Spotify"
+    ("there is open whatsapp", "open whatsapp"),
     ("open whatsapp", None),                               # already a command: nothing to strip
     ("i was going to open a shop someday with my brother in lahore", None),  # too long to guess
     ("tell me about the time we went to open the shop", None),               # >3 words before the verb
