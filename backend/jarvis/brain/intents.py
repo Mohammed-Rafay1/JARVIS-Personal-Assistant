@@ -15,7 +15,14 @@ class Intent:
     args: dict = field(default_factory=dict)
 
 
-_WAKE = re.compile(r"^(?:(?:hey|hi|okay|ok|hello|yo|a)\s+)?(?:jarvis|jervis|travis|service)\b[\s,.!]*")
+_WAKE = re.compile(r"^(?:(?:hey|hi|okay|ok|hello|yo|a)\s+)?(?:jarvis|jervis|travis|service|jarviss|jarvi|jarvas|"
+                   r"jervais|javis|jarwis|derivis|derivi|devis)\b[\s,.!]*")
+# Whisper's other spellings of "Jarvis" for this voice are also real names, so they are only dropped when a
+# command follows: "Davis, play Dilruba on Spotify" -> "play Dilruba on Spotify", but "Davis is late" stays.
+_WAKE_NAME_CMD = re.compile(
+    r"^(?:davis|dervis|purvis|harvis|charvis)[\s,.!]+(?=(?:please |can you |could you )?(?:open|close|play|played|"
+    r"pause|stop|search|google|find|send|email|check|show|tell|what|what's|how|lock|mute|unmute|set|turn|go|"
+    r"launch|start|read|reply|whatsapp|volume|next|skip)\b)")
 _POLITE_PRE = re.compile(
     r"^(?:please|kindly|just|now|and|so|um|uh|hey|can you|could you|would you|will you|would you mind|"
     r"i want you to|i'd like you to|i would like you to|i want to|i would like to|i'd like to|"
@@ -33,10 +40,12 @@ def normalize(text: str) -> str:
     t = re.sub(r"\s*\bfor me\b", "", t)                     # "open youtube for me on chrome"
     t = re.sub(r"\bwhat'?s ?app\b", "whatsapp", t)  # Whisper's spelling of WhatsApp (not "what's up")
     for _ in range(4):  # "so, jarvis, can you play..." peels off in layers
-        new = _POLITE_POST.sub("", _POLITE_PRE.sub("", _WAKE.sub("", t))).strip()
+        new = _POLITE_POST.sub("", _POLITE_PRE.sub("", _WAKE.sub("", _WAKE_NAME_CMD.sub("", t)))).strip()
         if new == t:
             break
         t = new
+    # "Davis played Dilruba's song on Spotify": Whisper hears the request as past tense
+    t = re.sub(r"^played\b(?=.*\bon (?:spotify|youtube)$)", "play", t)
     return t
 
 

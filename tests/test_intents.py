@@ -166,3 +166,20 @@ def test_resolver_hook():
 
     got = parse("open spotify", resolve_open=lambda target, verb: Intent("open_app", {"name": target}))
     assert got.tool == "open_app" and got.args["name"] == "spotify"
+
+
+@pytest.mark.parametrize("spoken,tool", [
+    # Whisper's spellings of "Jarvis" for this voice, copied from the log
+    ("Davis, Play Dilruba Song on YouTube.", "play_youtube"),
+    ("Davis Close, Spotify,", "close_app"),
+    ("Davis played Dilruba's song on Spotify.", "play_spotify"),
+    ("Jervais open chrome", "open_any"),
+    ("Derivi, what time is it?", "tell_time"),
+])
+def test_misheard_wake_name_is_dropped(spoken, tool):
+    got = parse(normalize(spoken))
+    assert got is not None and got.tool == tool
+
+
+def test_real_name_without_command_is_kept():
+    assert normalize("Davis is late today") == "davis is late today"
