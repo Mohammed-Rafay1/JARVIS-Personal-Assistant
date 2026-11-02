@@ -101,15 +101,15 @@ class STT:
         self.prompt = "Jarvis, " + ", ".join(words[:60]) + "."
 
     def transcribe(self, audio: np.ndarray, good_enough: Callable[[str], bool] | None = None,
-                   cancelled: Callable[[], bool] | None = None) -> str:
+                   cancelled: Callable[[], bool] | None = None, retry_max_seconds: float | None = None) -> str:
         """good_enough(text): True when the fast pass is already usable (a clear command), so the slow
         re-check is skipped. cancelled(): True once the user has moved on (interrupted, call closed)."""
         with self._busy:
             if cancelled and cancelled():
                 return ""
-            return self._transcribe(audio, good_enough, cancelled)
+            return self._transcribe(audio, good_enough, cancelled, retry_max_seconds or self.retry_max_seconds)
 
-    def _transcribe(self, audio: np.ndarray, good_enough, cancelled) -> str:
+    def _transcribe(self, audio: np.ndarray, good_enough, cancelled, retry_max: float) -> str:
         raw = audio
         self.last_conf = 0.0
         if audio.size < 16000 * 0.3:
@@ -127,7 +127,7 @@ class STT:
         # re-check only unsure *speech*; if the fast pass found no speech at all it's noise, move on
         fast_text = " ".join(s.text for s in segments).strip()
         recheck = self.accurate is not None and -9.0 < conf < self.retry_below
-        if recheck and audio.size / 16000 > self.retry_max_seconds:
+        if recheck and audio.size / 16000 > retry_max:
             recheck = False
             log.info("STT re-check skipped: %.1fs clip", audio.size / 16000)
         elif recheck and cancelled and cancelled():

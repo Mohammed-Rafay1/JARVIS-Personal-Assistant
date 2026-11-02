@@ -121,3 +121,10 @@ websites:
 
 ui:
   idle_dock: true            # small orb in the corner when idle (false = hide completely)
+
+whatsapp_remote:             # command Jarvis from your phone: text or voice notes on WhatsApp
+  enabled: true
+  self_chat: true            # your "Message yourself" chat on the linked WhatsApp account works as a remote
+  allowed: []                # other numbers that may command Jarvis, international format, e.g. ["923001234567"]
+  voice_replies: true        # answer a voice note with a voice note as well as text
+  phone: ""                  # optional: link with an 8-digit code instead of a QR code (number to link, international format)

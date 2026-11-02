@@ -41,6 +41,7 @@ DEFAULTS: dict[str, Any] = {
     "apps": {"aliases": {}},
     "websites": {},
     "ui": {"idle_dock": True},
+    "whatsapp_remote": {"enabled": False, "allowed": [], "self_chat": True, "voice_replies": True, "phone": ""},
 }
 
 

@@ -14,3 +14,6 @@ __pycache__/
 
 # original planning notes (kept private)
 JARVIS_IMPLEMENTATION_PLAN.md
+
+# WhatsApp bridge
+whatsapp-bridge/node_modules/

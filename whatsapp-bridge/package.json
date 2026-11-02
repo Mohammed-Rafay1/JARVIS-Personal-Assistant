@@ -1,0 +1,12 @@
+{
+  "name": "jarvis-whatsapp-bridge",
+  "private": true,
+  "type": "module",
+  "description": "Links Jarvis to WhatsApp (Baileys) so it can take text and voice-note commands from your phone.",
+  "main": "index.mjs",
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "pino": "9.7.0",
+    "qrcode": "1.5.4"
+  }
+}

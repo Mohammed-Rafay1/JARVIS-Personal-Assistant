@@ -65,6 +65,19 @@ Your account is Google Workspace, so you first need an OAuth client. This takes 
 
 The access token is stored in Windows Credential Manager, not in a file. If your Workspace admin blocks the app, ask IT to allow the OAuth client ID you created.
 
+## Command Jarvis from your phone (WhatsApp)
+
+Send Jarvis a text or a **voice note** on WhatsApp. It transcribes the note, does the job on the laptop exactly as if you'd said it, and replies in the chat with text, plus a voice note if you sent one. Lists (files, projects, emails) arrive numbered, so you can answer "2". Emails and WhatsApp messages are still only sent after you reply "send it".
+
+**Link it once:** when Jarvis starts, a page opens with a QR code. On your phone open **WhatsApp → Settings → Linked devices → Link a device** and scan it. (`whatsapp_remote.phone` in `config.yaml` gives an 8-digit pairing code instead.)
+
+- **Same number as your phone:** message Jarvis in your **"Message yourself"** chat.
+- **A second number (recommended):** link the second WhatsApp, then add your own number to `whatsapp_remote.allowed`, e.g. `["923001234567"]`, and message that number.
+
+Only those chats can command Jarvis. Everyone else, groups, status updates and messages older than 2 minutes are ignored, and voice notes are deleted after transcription. The laptop has to be on and awake. Spotify and WhatsApp-sending need the screen **unlocked**, because they click on screen. To unlink, remove "Jarvis" under Linked devices on your phone. To link again or switch numbers, run **`link_whatsapp.bat`**.
+
+Baileys (the library used) is unofficial. WhatsApp may ban numbers it sees automating, which is why a second number is the safer choice.
+
 ## Settings (`config.yaml`)
 
 Common changes:

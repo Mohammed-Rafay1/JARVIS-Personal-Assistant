@@ -82,6 +82,9 @@ class Jarvis:
         self._heard: list[np.ndarray] = []   # frames of the utterance being recognised right now
         self._recognising = False
         self._heard_conf = 0.0          # recogniser confidence of the last spoken request
+        self._remote_said: list[str] | None = None   # replies collected for a WhatsApp command
+        self._remote_cards: list[dict] = []
+        self._remote_lock = asyncio.Lock()
         self._speech_q: asyncio.Queue | None = None
         self.notices: list[dict] = []
         self.in_call = False          # a "call" = continuous conversation after a wake, until stop/close
@@ -183,6 +186,11 @@ class Jarvis:
         if health["brain"] == "ready":
             asyncio.create_task(self.llm.warm([]))  # questions are the common LLM path; prime that prefix
         health["email"] = await self._connect_email()
+        if self.cfg.get("whatsapp_remote", {}).get("enabled"):
+            from .services.whatsapp_remote import WhatsAppRemote
+
+            asyncio.create_task(WhatsAppRemote(self.cfg, self).run())
+            health["whatsapp"] = "remote on"
         self.mode = "wake"
         self._set_state("idle")
         self._status("Ready", ready=True, health=health)
@@ -662,6 +670,8 @@ class Jarvis:
         for r in results:
             if r.card:
                 self.ui.send({"type": "card", **r.card})
+                if self._remote_said is not None:
+                    self._remote_cards.append(r.card)
             if r.pending:
                 self.pending = r.pending
         ok = all(r.ok for r in results)
@@ -670,7 +680,7 @@ class Jarvis:
         if self.in_call and any(r.ok and r.icon in _REVEALS for r in results):
             self.ui.send({"type": "call", "value": "mini"})
         if not ok:
-            self.player.play(earcons.ERROR)
+            self._remote_said is None and self.player.play(earcons.ERROR)
             self._set_state("error")
         wants_answer = any(r.pending and r.pending.get("kind") != "email_list" for r in results)
         if self.in_call and not wants_answer and any(r.ok and r.icon in ("youtube", "spotify") for r in results):
@@ -1095,6 +1105,8 @@ class Jarvis:
     # ------------------------------------------------------------------ speech
     def _queue_speech(self, sentence: str) -> None:
         self.ui.send({"type": "reply", "text": sentence, "append": True})
+        if self._remote_said is not None:
+            self._remote_said.append(sentence)
         self._speech_q.put_nowait(sentence)
 
     async def _speech_worker(self) -> None:
@@ -1151,6 +1163,37 @@ class Jarvis:
             return
         self.follow_up = True
         self._start_capture(self.cfg["listening"]["follow_up_seconds"])
+
+    # ------------------------------------------------------------------ WhatsApp commands
+    async def handle_remote(self, text: str, voice: bool, conf: float = 0.0) -> tuple[list[str], list[str]]:
+        """One command from your phone. Runs exactly like a spoken or typed one (same commands, same
+        confirmations), silently on the laptop. Returns (what Jarvis said, cards as text)."""
+        from .services.whatsapp_remote import card_text
+
+        async with self._remote_lock:
+            for _ in range(120):  # a call on the laptop finishes first; the phone gets the next turn
+                if not self.in_call and (self.task is None or self.task.done()):
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                return [f"I'm busy on the laptop right now, {self.cfg['address_as']}. Please send that again "
+                        "in a minute."], []
+            self._remote_said, self._remote_cards = [], []
+            self.speak_aloud = False
+            self.ui.send({"type": "reply", "text": "", "append": False})
+            if voice:
+                self.ui.send({"type": "transcript", "text": f"📱 {text}", "final": True})
+                self._heard_conf = conf
+            self.task = asyncio.create_task(self.handle_text(text, typed=not voice))
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                self._remote_said.append("That was interrupted on the laptop, sir.")
+            finally:
+                said, cards = self._remote_said, self._remote_cards
+                self._remote_said, self._remote_cards = None, []
+                self.speak_aloud = True
+            return said, [card_text(c) for c in cards]
 
     # ------------------------------------------------------------------ email announcements
     async def _announce_mail(self, msgs: list[dict]) -> None:
