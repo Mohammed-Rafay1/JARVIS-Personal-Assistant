@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ws://127.0.0.1:*; img-src 'self' data:">
+  <title>JARVIS</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dock booting">
+  <!-- ================= full-screen call ================= -->
+  <div id="backdrop"><div class="grid"></div><div class="scan"></div><div class="vignette"></div></div>
+
+  <header id="topbar">
+    <div class="brand">
+      <div class="mark"><span></span></div>
+      <div><div class="name">J.A.R.V.I.S</div><div class="tag">Just A Rather Very Intelligent System</div></div>
+    </div>
+    <div id="timer"><span class="rec"></span><span class="lbl">SESSION</span><span id="timer-text">00:00</span></div>
+    <div class="win">
+      <button id="btn-min" class="icon-btn" title="Minimise (Ctrl+Alt+J)" aria-label="Minimise">
+        <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      <button id="btn-close" class="icon-btn close" title="End and close (Esc)" aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+  </header>
+
+  <aside id="telemetry" class="hud-panel">
+    <div class="panel-head">System</div>
+    <div class="t-row"><span>Status</span><b id="t-status">ONLINE</b></div>
+    <div class="t-row"><span>Microphone</span><b id="t-mic">LIVE</b></div>
+    <div class="t-row"><span>CPU</span><b id="t-cpu">--</b></div>
+    <div class="t-bar"><i id="t-cpu-bar"></i></div>
+    <div class="t-row"><span>Memory</span><b id="t-mem">--</b></div>
+    <div class="t-bar"><i id="t-mem-bar"></i></div>
+    <div class="t-row"><span>Recognition</span><b id="t-stt">--</b></div>
+    <div class="t-row"><span>Core model</span><b id="t-llm">--</b></div>
+    <div class="t-row"><span>Voice</span><b id="t-voice">--</b></div>
+    <div class="panel-head gap">Local time</div>
+    <div id="t-clock">--:--:--</div>
+    <div id="t-date">---</div>
+  </aside>
+
+  <div id="hud" aria-hidden="true">
+    <canvas id="spectrum"></canvas>
+    <svg class="ring r1" viewBox="0 0 200 200"><circle cx="100" cy="100" r="97"/></svg>
+    <svg class="ring r2" viewBox="0 0 200 200"><circle cx="100" cy="100" r="92"/></svg>
+    <svg class="ring r3" viewBox="0 0 200 200"><circle cx="100" cy="100" r="87"/></svg>
+    <svg class="ring r4" viewBox="0 0 200 200"><circle cx="100" cy="100" r="99.2"/></svg>
+    <svg class="ring marks" viewBox="0 0 200 200">
+      <text x="100" y="5.5">000</text><text x="196" y="101.5">090</text><text x="100" y="198">180</text><text x="4" y="101.5">270</text>
+    </svg>
+  </div>
+
+  <div id="orb-wrap" class="interactive" title="Click to talk · right-click to mute">
+    <canvas id="orb"></canvas>
+    <div id="mute-badge">MIC OFF</div>
+  </div>
+
+  <section id="center">
+    <div id="status"><span id="status-text">Listening</span><span class="caret">_</span></div>
+    <div id="you"></div>
+    <div id="live"></div>
+  </section>
+
+  <aside id="side" class="hud-panel">
+    <div id="cards"></div>
+    <div class="panel-head">Comms log</div>
+    <div id="log"></div>
+  </aside>
+
+  <footer id="controls">
+    <button id="btn-mic" class="round" title="Mute microphone" aria-label="Mute microphone">
+      <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 4l16 16"/></svg>
+    </button>
+    <form id="bar" autocomplete="off">
+      <span class="prompt">&gt;</span>
+      <input id="input" type="text" spellcheck="false" placeholder="Type a command…">
+    </form>
+    <button id="btn-end" class="round end" title="End (Esc)" aria-label="End">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </footer>
+  <div id="hints">Say <b>“bye”</b> to end · <b>Esc</b> close · <b id="hk">Ctrl+Alt+J</b> minimise</div>
+
+  <!-- ================= minimised call ================= -->
+  <div id="pill" class="interactive">
+    <div class="pill-text"><div id="pill-status">Listening</div><div id="pill-line"></div></div>
+    <button id="pill-expand" class="icon-btn" title="Expand" aria-label="Expand">
+      <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    <button id="pill-end" class="icon-btn close" title="End" aria-label="End">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+
+  <div id="toasts"></div>
+  <script type="module" src="renderer.js"></script>
+</body>
+</html>

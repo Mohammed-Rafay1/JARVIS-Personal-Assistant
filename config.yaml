@@ -1,0 +1,118 @@
+# JARVIS settings. Restart Jarvis after editing.
+
+address_as: "sir"            # how Jarvis addresses you
+
+wake_word:
+  enabled: true
+  model: hey_jarvis          # pretrained openWakeWord model
+  threshold: 0.15            # lower (0.35) if it misses you, raise (0.6) if it wakes by accident
+  threshold_while_speaking: 0.75
+  whisper_backup: true       # also spot "Hey Jarvis" with speech recognition (helps accents the model misses)
+  near_peak: 0.3             # only short phrases at least this loud (you, at the laptop) are checked
+
+mic:
+  gain: 1.0                  # software boost for a quiet mic; calibrate_wake.bat sets this for you
+
+hotkey: "Control+Alt+J"      # talk or type
+listening:
+  silence_ms: 600            # pause length that ends your sentence
+  max_seconds: 12
+  no_speech_timeout: 5       # give up if you say nothing after waking it
+  follow_up_seconds: 6       # after Jarvis asks you something (send it? which file?), answer without the wake word
+  follow_up_after_chat: false # also keep listening when a chat answer ends in a question (noisy rooms: keep off)
+  vad_aggressiveness: 2      # 0-3, higher ignores more background noise
+
+call:                        # "Hey Jarvis" opens a full-screen call that keeps listening
+  first_timeout: 8           # end quietly if nothing is said right after waking (accidental wake)
+  idle_timeout: 90           # end after this many seconds of silence (say "bye" or press X to end sooner)
+  greeting: true             # "Good morning, sir. Systems are online. Awaiting your command. What would you like me to do?"
+  barge_in: true             # start talking while Jarvis speaks and it stops to listen
+  barge_in_ratio: 2.5        # how much louder than Jarvis's own echo your voice must be (raise if it interrupts itself)
+
+stt:
+  model: base.en             # fast first pass
+  accurate_model: small.en   # re-checks only when the fast pass is unsure (accents, names); "" to turn off
+  retry_below: -0.6          # confidence below which the re-check runs (lower = fewer re-checks, faster)
+  compute_type: int8
+  threads: 4
+
+tts:
+  engine: auto               # auto = piper (fast) | kokoro (most natural, ~6x slower on this laptop) | sapi
+  piper_voice: en_GB-alan-medium
+  voice: bm_george           # Kokoro voice: bm_george, bm_lewis, bm_daniel
+  speed: 1.05
+speak_typed_replies: false   # typed commands get silent, on-screen replies (handy in meetings)
+greet_on_start: true
+
+llm:
+  enabled: true
+  model: qwen2.5:3b
+  host: http://127.0.0.1:11434
+  keep_alive: 30m            # unloads from RAM (~2.3 GB) after this much idle time
+
+music:
+  default_service: youtube   # used for "play X" with no service named: youtube | spotify
+
+ducking:
+  enabled: true              # lower other apps' audio while you talk to Jarvis
+  level: 0.25
+
+claude_code:
+  allow_tasks: false         # read-only: Jarvis briefs you on projects but never sends Claude Code work
+  ai_summary: false          # true = local-AI summary (nicer wording, but over a minute on this laptop)
+
+files:
+  search_roots: ["~"]        # where file search looks
+
+email:
+  enabled: true              # connected with an app password
+  poll_seconds: 60
+  announce: true
+  only_primary: true         # skip Promotions / Social / Updates
+  vip: []                    # always announce these senders, e.g. ["boss@example.com"]
+  quiet_hours: ["22:00", "07:30"]
+  hold_during_calls: true    # wait until Teams/Zoom stops using the mic
+  signature: ""              # appended to emails Jarvis writes
+
+apps:
+  aliases:
+    vs code: Visual Studio Code
+    vscode: Visual Studio Code
+    code: Visual Studio Code
+    word: Word
+    powerpoint: PowerPoint
+    teams: Microsoft Teams
+    browser: Google Chrome
+    chrome: Google Chrome
+    edge: Microsoft Edge
+    file explorer: File Explorer
+    explorer: File Explorer
+    calculator: Calculator
+    notepad: Notepad
+    settings: Settings
+    terminal: Terminal
+    task manager: Task Manager
+    claude code: Claude
+    claude: Claude
+
+websites:
+  google: https://www.google.com
+  youtube: https://www.youtube.com
+  gmail: https://mail.google.com
+  github: https://github.com
+  linkedin: https://www.linkedin.com
+  chatgpt: https://chatgpt.com
+  claude: https://claude.ai
+  whatsapp: https://web.whatsapp.com
+  google drive: https://drive.google.com
+  drive: https://drive.google.com
+  calendar: https://calendar.google.com
+  maps: https://maps.google.com
+  google maps: https://maps.google.com
+  stack overflow: https://stackoverflow.com
+  wikipedia: https://www.wikipedia.org
+  netflix: https://www.netflix.com
+  spotify web: https://open.spotify.com
+
+ui:
+  idle_dock: true            # small orb in the corner when idle (false = hide completely)

@@ -1,0 +1,13 @@
+.venv/
+ui/node_modules/
+data/
+secrets/
+credentials.json
+token*
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# local tooling (machine-specific paths)
+.claude/
