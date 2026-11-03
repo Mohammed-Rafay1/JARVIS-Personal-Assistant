@@ -80,6 +80,8 @@ class STT:
         if peak < 0.01:
             return ""
         if not (self._busy.acquire(timeout=wait) if wait else self._busy.acquire(blocking=False)):
+            if wait:
+                log.info("quick check skipped: recogniser busy for %.0fs", wait)
             return ""  # a real request is being recognised; the idle wake check can skip this phrase
         try:
             segments, _ = self._run(self.model, _trim(audio / peak * 0.9))

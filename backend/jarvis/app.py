@@ -99,6 +99,7 @@ class Jarvis:
         self.last_stt = 0.0
         self._wake_checking = False
         self._wake_verifying = False
+        self._greeted_at = 0.0
         self._speech_gen = 0
         self._barge_echo: list[float] = []
         self._barge_run = 0
@@ -208,10 +209,11 @@ class Jarvis:
         sir = self.cfg["address_as"]
         from .audio.tts import split_sentences
 
-        for line in split_sentences(_greeting_lines(sir)):
+        for line in split_sentences(_greeting_lines(sir)) + split_sentences(_short_greeting(sir)):
             await asyncio.to_thread(self.tts.synth, line)
         if not self.cfg.get("greet_on_start", True):
             return
+        self._greeted_at = time.monotonic()  # it has just said hello; the next call can be a quick "Yes, sir?"
         await self.say(f"{_good_time_of_day()}, {self.cfg['address_as']}. Systems are online.", then_idle=True)
 
     async def _connect_email(self) -> str:
@@ -444,8 +446,14 @@ class Jarvis:
         self._start_capture(self._listen_timeout(), preroll, carry)
 
     async def _greet(self) -> None:
-        """Opening line of every call; listening starts as soon as it finishes."""
-        await self.say(_greeting_lines(self.cfg["address_as"]), then_idle=False)
+        """Opening line of every call; listening starts as soon as it finishes. The full greeting took
+        ~5 s and played on every call (3 Nov: calls were closed mid-greeting), so after the first call
+        it's a quick "Yes, sir?" until a few hours have passed."""
+        now, hours = time.monotonic(), float(self.cfg["call"].get("full_greeting_hours", 3))
+        full = not self._greeted_at or now - self._greeted_at > hours * 3600
+        self._greeted_at = now
+        sir = self.cfg["address_as"]
+        await self.say(_greeting_lines(sir) if full else _short_greeting(sir), then_idle=False)
         self._start_capture(self._listen_timeout())
 
     async def _telemetry(self) -> None:
@@ -1527,6 +1535,10 @@ def _project_words(text: str) -> str:
 def _greeting_lines(sir: str) -> str:
     return (f"{_good_time_of_day()}, {sir}. Systems are online. "
             "Awaiting your command. What would you like me to do?")
+
+
+def _short_greeting(sir: str) -> str:
+    return f"Yes, {sir}?"
 
 
 def _good_time_of_day() -> str:

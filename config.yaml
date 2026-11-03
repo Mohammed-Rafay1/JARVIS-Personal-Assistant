@@ -27,7 +27,8 @@ listening:
 call:                        # "Hey Jarvis" opens a full-screen call that keeps listening
   first_timeout: 8           # end quietly if nothing is said right after waking (accidental wake)
   idle_timeout: 90           # end after this many seconds of silence (say "bye" or press X to end sooner)
-  greeting: true             # "Good morning, sir. Systems are online. Awaiting your command. What would you like me to do?"
+  greeting: true             # "Yes, sir?" when you call; the full "Good evening, sir. Systems are online..." only after a long break
+  full_greeting_hours: 3     # hours without a call before the full greeting plays again
   barge_in: true             # start talking while Jarvis speaks and it stops to listen
   barge_in_ratio: 2.5        # how much louder than Jarvis's own echo your voice must be (raise if it interrupts itself)
   rethink_min_rms: 1800      # how loud speech must be to interrupt Jarvis while it's thinking (raise if other voices interrupt it)

@@ -262,3 +262,17 @@ def test_mute_outside_a_call_stays(monkeypatch, tmp_path):
     j.in_call = True
     j._end_call("closed")
     assert j.muted
+
+
+def test_full_greeting_once_then_short(monkeypatch, tmp_path):
+    j, said = _jarvis(monkeypatch, tmp_path)
+    j.cfg["call"] = {"full_greeting_hours": 3}
+    j._start_capture = lambda *a, **k: None
+    j._listen_timeout = lambda: 8
+    asyncio.run(j._greet())
+    assert "Systems are online" in said[-1]
+    asyncio.run(j._greet())
+    assert said[-1] == "Yes, sir?"
+    j._greeted_at -= 4 * 3600                 # a long break: the full greeting again
+    asyncio.run(j._greet())
+    assert "Systems are online" in said[-1]
