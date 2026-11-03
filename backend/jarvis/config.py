@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ DATA = ROOT / "data"
 MODELS = DATA / "models"
 LOGS = DATA / "logs"
 SECRETS = ROOT / "secrets"
+RUNTIME = DATA / "runtime"
+WINDOWS = sys.platform == "win32"
 
 DEFAULTS: dict[str, Any] = {
     "address_as": "sir",
@@ -33,7 +36,7 @@ DEFAULTS: dict[str, Any] = {
             "keep_alive": "30m", "first_reply_seconds": 20, "gap_seconds": 15, "filler_after_seconds": 4},
     "music": {"default_service": "youtube"},
     "ducking": {"enabled": True, "level": 0.25},
-    "claude_code": {"allow_tasks": False},
+    "claude_code": {"allow_tasks": False, "exclude_paths": []},
     "files": {"search_roots": ["~"]},
     "email": {"enabled": True, "poll_seconds": 60, "announce": True, "only_primary": True,
               "vip": [], "quiet_hours": ["22:00", "07:30"], "hold_during_calls": True,
@@ -53,9 +56,11 @@ def _merge(base: dict, over: dict) -> dict:
 
 
 def load_config() -> dict[str, Any]:
-    path = ROOT / "config.yaml"
-    user = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
-    return _merge(DEFAULTS, user or {})
+    cfg = DEFAULTS
+    for path in (ROOT / "config.yaml", ROOT / "config.local.yaml"):  # config.local.yaml: this machine only
+        user = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+        cfg = _merge(cfg, user or {})
+    return cfg
 
 
 def load_contacts() -> dict[str, str]:

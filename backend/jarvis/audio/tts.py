@@ -15,7 +15,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from ..config import MODELS
+from ..config import MODELS, WINDOWS
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +136,8 @@ class TTS:
             except Exception as e:
                 log.warning("TTS %s unavailable: %s", name, e)
         if self.engine is None:
+            if not WINDOWS:  # no built-in voice to fall back on
+                raise RuntimeError("no voice model found: run scripts/setup_linux.sh")
             self.engine = _Sapi(speed)
             log.info("TTS: Windows voice (run scripts\\download_models.py for a better voice)")
         self._lock = threading.Lock()

@@ -17,3 +17,7 @@ JARVIS_IMPLEMENTATION_PLAN.md
 
 # WhatsApp bridge
 whatsapp-bridge/node_modules/
+
+# Ubuntu: project-local Node.js and Ollama, and this machine's own settings
+.tools/
+config.local.yaml
