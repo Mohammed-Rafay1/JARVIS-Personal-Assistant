@@ -21,7 +21,10 @@ let win, tray, muted = false, mode = 'dock';
 
 function place() {
   if (mode === 'full') {  // a call covers the whole screen the cursor is on
-    win.setBounds(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).bounds);
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    // Linux: a frameless window exactly the size of the monitor counts as fullscreen in GNOME, which then
+    // hides the dock and top bar. The work area leaves them visible.
+    win.setBounds(LINUX ? display.workArea : display.bounds);
     return;
   }
   const { workArea } = screen.getPrimaryDisplay();

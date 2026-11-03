@@ -263,6 +263,7 @@ This removes everything JARVIS installed or stored, including the models, logs, 
 - **Sending WhatsApp messages to contacts from the laptop** ("WhatsApp Ali that…") isn't available. On Windows it drives the WhatsApp desktop app, which doesn't exist for Linux. Jarvis says so if asked. Commanding Jarvis *from* WhatsApp on your phone does work.
 - **File search** scans your home folder for up to 4 seconds instead of using the Windows Search index, so files in very large folders can be missed. Add folders to `files.search_roots` in `config.local.yaml` if needed.
 - **No built-in fallback voice:** Windows can fall back to its own voice. On Ubuntu, Piper is required (setup installs it).
+- **Conversation screen:** it fills the screen except the top bar and the dock. If it covered the whole monitor, as on Windows, GNOME would treat it as a fullscreen app and hide the dock.
 - **Tray icon:** left-clicking does nothing on Ubuntu. Use its menu.
 - **CPU priority:** on Windows, Jarvis raises its own priority. Ubuntu needs admin rights for that, so it runs at normal priority.
 - The local AI's instructions still say "Windows laptop". They were deliberately left unchanged, and it doesn't affect what Jarvis does.
