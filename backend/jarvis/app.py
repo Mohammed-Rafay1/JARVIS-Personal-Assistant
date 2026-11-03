@@ -72,6 +72,7 @@ class Jarvis:
         self.state = "booting"
         self.mode = "off"             # audio thread mode: off | wake | capture
         self.muted = False
+        self._muted_in_call = False   # a mute pressed during a call lasts for that call only
         self.pending: dict | None = None
         self.history: deque[dict] = deque(maxlen=8)  # a shorter prompt answers faster on this CPU
         self._last_chat = 0.0
@@ -364,7 +365,7 @@ class Jarvis:
             self._wake_checking = False
         rest = wake_phrase(text) if text else None
         if rest is None or self.in_call or self.state != "idle" or self.muted:
-            log.debug("wake check: no (%r)", text)
+            log.info("wake check: no (%r)", text)
             return
         log.info("wake (whisper): %r", text)
         # "Hey Jarvis, open Chrome" in one breath: skip the greeting and do it
@@ -452,6 +453,11 @@ class Jarvis:
         self.in_call = False
         self.ui.send({"type": "call", "value": "end", "reason": reason})
         self.player.play(earcons.END)
+        if self.muted and self._muted_in_call:
+            # 3 Nov: a mute pressed mid-call stayed on after the call closed, and "Hey Jarvis" was
+            # ignored for 16 minutes with only a grey orb to show why
+            self.muted = self._muted_in_call = False
+            self._status("Ready", ready=True)
         self._idle()
 
     def _interrupt(self) -> None:
@@ -1421,6 +1427,7 @@ class Jarvis:
             self.ui.send({"type": "snapshot"})
         elif kind == "mute":
             self.muted = bool(msg.get("value"))
+            self._muted_in_call = self.muted and self.in_call
             if self.muted:
                 self._interrupt()
                 self._idle()

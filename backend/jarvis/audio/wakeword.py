@@ -30,7 +30,7 @@ class WakeWord:
         score = self.model.predict(frame)[self.name]
         now = time.monotonic()
         thr = threshold or self.threshold
-        if 0.15 <= score < thr and now - self._near_logged > 1.5:
+        if 0.08 <= score < thr and now - self._near_logged > 1.5:
             # near misses tell us whether the threshold suits this voice and microphone
             log.info("wake near-miss (score %.2f, threshold %.2f)", score, thr)
             self._near_logged = now

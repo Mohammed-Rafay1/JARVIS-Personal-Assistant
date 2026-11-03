@@ -240,3 +240,25 @@ def test_snippet_made_speakable():
     s = ("The recorded history of Lahore (Punjabi: لاہور (Shahmukhi); romanized: "
          "Lāhaur) refers to the city's past (founded 1000 AD). Today it is the capital. More ...")
     assert speakable(s) == "The recorded history of Lahore refers to the city's past (founded 1000 AD). Today it is the capital."
+
+
+def test_mute_in_a_call_ends_with_the_call(monkeypatch, tmp_path):
+    j, said = _jarvis(monkeypatch, tmp_path)
+    j.player = type("P", (), {"play": lambda self, x: None, "stop": lambda self: None})()
+    j._idle, j.state = (lambda: None), "idle"
+    j.in_call = True
+    asyncio.run(j.on_ui({"type": "mute", "value": True}))
+    assert j.muted
+    j._end_call("closed")
+    assert not j.muted                         # "Hey Jarvis" works again after the call
+
+
+def test_mute_outside_a_call_stays(monkeypatch, tmp_path):
+    j, said = _jarvis(monkeypatch, tmp_path)
+    j.player = type("P", (), {"play": lambda self, x: None, "stop": lambda self: None})()
+    j._idle, j.state = (lambda: None), "idle"
+    j.in_call = False
+    asyncio.run(j.on_ui({"type": "mute", "value": True}))
+    j.in_call = True
+    j._end_call("closed")
+    assert j.muted
