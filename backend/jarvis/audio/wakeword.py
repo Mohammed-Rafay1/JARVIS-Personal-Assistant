@@ -23,6 +23,7 @@ class WakeWord:
         self.threshold = threshold
         self._cooldown_until = 0.0
         self._near_logged = 0.0
+        self.last_score = 0.0
         log.info("wake word ready: %s (threshold %.2f)", self.name, threshold)
 
     def process(self, frame: np.ndarray, threshold: float | None = None) -> bool:
@@ -37,6 +38,7 @@ class WakeWord:
         if score >= (threshold or self.threshold) and now >= self._cooldown_until:
             log.info("wake word (score %.2f)", score)
             self._cooldown_until = now + 2.0
+            self.last_score = float(score)
             self.model.reset()
             return True
         return False

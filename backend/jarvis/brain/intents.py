@@ -81,6 +81,11 @@ WAKE_TEXT = re.compile(
     r"|" + _NAME + r")\b[\s,.!?]*(?P<rest>.*)$", re.I)
 
 
+def mentions_wake(text: str) -> bool:
+    """True if "Hey Jarvis" (or the bare name) is anywhere in the text: "...the video. Hey Jarvis." """
+    return any(WAKE_TEXT.match(text[m.start():]) for m in re.finditer(r"\b\w", text))
+
+
 def wake_phrase(text: str) -> str | None:
     """None if the text doesn't start with "Hey Jarvis"; else whatever was said after it ("" if nothing)."""
     m = WAKE_TEXT.match(text.strip())

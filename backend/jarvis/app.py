@@ -83,6 +83,7 @@ class Jarvis:
         self.ducker = None
         self.llm = None
         self._preroll: deque[np.ndarray] = deque(maxlen=8)
+        self._wake_ring: deque[np.ndarray] = deque(maxlen=30)  # the last 2.4 s, to check a weak wake
         self._heard: list[np.ndarray] = []   # frames of the utterance being recognised right now
         self._recognising = False
         self._heard_conf = 0.0          # recogniser confidence of the last spoken request
@@ -269,6 +270,7 @@ class Jarvis:
                 continue
             if self.mode == "wake":
                 self._preroll.append(frame)
+                self._wake_ring.append(frame)
                 speaking = self.player.busy
                 if not speaking:  # Jarvis's own voice must not raise the "background noise" level
                     self.endpointer.observe_idle(frame)
@@ -286,7 +288,16 @@ class Jarvis:
                 if self.wake.process(frame, thr):
                     pre = list(self._preroll)[-3:]
                     self.wake_vad.reset()
-                    self.loop.call_soon_threadsafe(lambda p=pre: self._wake("voice", p))
+                    sure = float(self.cfg["wake_word"].get("verify_below", 0.5))
+                    if speaking or self.in_call or self.wake.last_score >= sure:
+                        self.loop.call_soon_threadsafe(lambda p=pre: self._wake("voice", p))
+                    elif not self._wake_checking:
+                        # 3 Nov: a video playing on the laptop scored 0.18-0.20 and kept opening Jarvis.
+                        # A weak score only wakes it if Whisper hears "Jarvis" in the last two seconds.
+                        self._wake_checking = True
+                        clip = np.concatenate(list(self._wake_ring)).astype(np.float32) / 32768.0
+                        self.loop.call_soon_threadsafe(
+                            lambda a=clip, s=self.wake.last_score: asyncio.ensure_future(self._verify_wake(a, s)))
                 elif not speaking and not self.in_call and self.cfg["wake_word"].get("whisper_backup", True):
                     self._backup_wake_feed(frame)
             elif self.mode == "capture":
@@ -355,6 +366,19 @@ class Jarvis:
         if 0.4 <= dur <= 3.4 and peak >= near and not self._wake_checking:
             self._wake_checking = True
             self.loop.call_soon_threadsafe(lambda a=audio: asyncio.ensure_future(self._wake_from_text(a)))
+
+    async def _verify_wake(self, audio: np.ndarray, score: float) -> None:
+        from .brain.intents import mentions_wake
+
+        try:
+            text = await asyncio.to_thread(self.stt.quick, audio)
+        finally:
+            self._wake_checking = False
+        if not mentions_wake(text or "") or self.in_call or self.state != "idle" or self.muted:
+            log.info("wake rejected (score %.2f): heard %r", score, (text or "").strip()[:60])
+            return
+        log.info("wake confirmed (score %.2f): %r", score, text)
+        self._wake("voice")
 
     async def _wake_from_text(self, audio: np.ndarray) -> None:
         from .brain.intents import wake_phrase

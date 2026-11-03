@@ -274,3 +274,20 @@ def test_backup_wake_ignores_talk(heard):
     from jarvis.brain.intents import wake_phrase
 
     assert wake_phrase(heard) is None
+
+
+@pytest.mark.parametrize("heard", ["Hey Jarvis!", "the video. Hey Jarvis.", "Okay Jarvis, open Chrome", "Hey, Jerry."])
+def test_weak_wake_confirmed_when_jarvis_is_heard(heard):
+    from jarvis.brain.intents import mentions_wake
+
+    assert mentions_wake(heard)
+
+
+@pytest.mark.parametrize("heard", [  # what the video on 3 Nov said when it woke Jarvis
+    "I hope you guys enjoy the video.", "Click on the link in the description below.", "Product, Get Started,",
+    "You can control the music.", "", "Jerry is late",
+])
+def test_weak_wake_rejected_for_other_speech(heard):
+    from jarvis.brain.intents import mentions_wake
+
+    assert not mentions_wake(heard)

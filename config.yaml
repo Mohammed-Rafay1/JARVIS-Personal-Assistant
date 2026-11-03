@@ -8,6 +8,7 @@ wake_word:
   threshold: 0.15            # lower (0.35) if it misses you, raise (0.6) if it wakes by accident
   threshold_while_speaking: 0.75
   whisper_backup: true       # also spot "Hey Jarvis" with speech recognition (helps accents the model misses)
+  verify_below: 0.5          # a weaker hit only wakes Jarvis if speech recognition hears "Jarvis" (stops videos/TV waking it)
   near_peak: 0.3             # only short phrases at least this loud (you, at the laptop) are checked
 
 mic:
