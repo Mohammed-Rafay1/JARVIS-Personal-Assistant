@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from ..config import DATA, ROOT
+from ..config import DATA, ROOT, WINDOWS
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +122,8 @@ class WhatsAppRemote:
         }))
         self.proc = await asyncio.create_subprocess_exec(
             node, str(BRIDGE), cwd=str(BRIDGE.parent), env=env, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, creationflags=0x08000000)
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            creationflags=0x08000000 if WINDOWS else 0)
         asyncio.create_task(self._pipe_stderr(self.proc))
         logged_out = False
         async for raw in self.proc.stdout:
@@ -180,8 +181,12 @@ class WhatsAppRemote:
             "Jarvis says it is linked.</p>"
             "<script>setInterval(()=>{const q=document.getElementById('q');"
             "if(q)q.src='" + QR_PNG.name + "?'+Date.now()},3000)</script>", encoding="utf-8")
-        if first:
+        if first and WINDOWS:
             os.startfile(str(LINK_PAGE))  # noqa: S606 - a local page we just wrote
+        elif first:
+            from ..linux import open_path
+
+            open_path(str(LINK_PAGE))
 
     # ------------------------------------------------------------------ messages
     async def _worker(self) -> None:

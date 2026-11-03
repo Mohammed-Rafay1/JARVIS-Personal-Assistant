@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ from pathlib import Path
 
 from rapidfuzz import fuzz, process
 
+from ..config import WINDOWS
 from . import CTX
 from .base import Result, tool
 
@@ -102,15 +104,27 @@ def _read(dir_: Path, deep: bool) -> Project | None:
     return p
 
 
+def _excluded() -> list[Path]:
+    paths = CTX.cfg.get("claude_code", {}).get("exclude_paths") or []
+    return [Path(os.path.expanduser(str(p))) for p in paths]
+
+
 def list_projects(limit: int = 6) -> list[Project]:
     found: dict[str, Project] = {}
+    excluded = _excluded()
+    # skipped by folder name first, so their session records are never even opened
+    encoded = [re.sub(r"[^A-Za-z0-9]", "-", str(p).rstrip("/\\")) for p in excluded]
     for d in PROJECTS.iterdir() if PROJECTS.exists() else []:
         if not d.is_dir() or any(k in d.name for k in _SKIP):
+            continue
+        if any(d.name == e or d.name.startswith(e + "-") for e in encoded):
             continue
         try:
             p = _read(d, deep=False)
         except Exception as e:
             log.debug("skip %s: %s", d.name, e)
+            continue
+        if p and any(Path(p.cwd).is_relative_to(e) for e in excluded):
             continue
         if p and Path(p.cwd).exists() and (p.cwd not in found or found[p.cwd].updated < p.updated):
             found[p.cwd] = p
@@ -243,7 +257,11 @@ def launch(cwd: str, name: str, task: str, session: str = "") -> Result:
     if session:
         args += ["--resume", session, "--fork-session"]
     args += ["-n", f"Jarvis: {name}", task.replace(";", ",")]  # ";" separates commands in Windows Terminal
-    if shutil.which("wt.exe"):
+    if not WINDOWS:
+        from ..linux import open_terminal
+
+        open_terminal(cwd, args)
+    elif shutil.which("wt.exe"):
         subprocess.Popen(["wt.exe", "-w", "new", "-d", cwd, "--title", f"Claude Code - {name}", *args])
     else:
         subprocess.Popen(["cmd", "/c", "start", "", *args], cwd=cwd)

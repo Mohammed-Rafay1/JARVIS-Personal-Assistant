@@ -5,6 +5,8 @@ import logging
 import os
 import threading
 
+from ..config import WINDOWS
+
 log = logging.getLogger(__name__)
 
 
@@ -16,6 +18,11 @@ class Ducker:
         self._lock = threading.Lock()
 
     def _sessions(self):
+        if not WINDOWS:
+            from ..linux import audio_sessions
+
+            yield from audio_sessions()
+            return
         import comtypes
         from pycaw.pycaw import AudioUtilities
 
@@ -43,6 +50,10 @@ class Ducker:
                     vol.SetMasterVolume(cur * self.level, None)
             except Exception as e:
                 log.debug("duck failed: %s", e)
+            if not WINDOWS:
+                from ..linux import remember_ducked
+
+                remember_ducked(self._saved)
 
     def restore(self) -> None:
         with self._lock:
@@ -55,3 +66,7 @@ class Ducker:
             except Exception as e:
                 log.debug("restore failed: %s", e)
             self._saved.clear()
+            if not WINDOWS:
+                from ..linux import remember_ducked
+
+                remember_ducked({})

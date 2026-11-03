@@ -17,6 +17,6 @@ contextBridge.exposeInMainWorld('host', {
   setMode: (m) => ipcRenderer.send('mode', m),
   quit: () => ipcRenderer.send('quit'),
   on: (channel, cb) => {
-    if (['hotkey', 'mute', 'quit'].includes(channel)) ipcRenderer.on(channel, (_e, v) => cb(v));
+    if (['hotkey', 'mute', 'quit', 'cursor'].includes(channel)) ipcRenderer.on(channel, (_e, v) => cb(v));
   },
 });

@@ -4,6 +4,8 @@ Everything runs on this laptop and costs nothing. The internet is used only by t
 
 Design notes and the review of the original plan are in [PLAN_REVIEW.md](PLAN_REVIEW.md).
 
+On Ubuntu, follow [UBUNTU_SETUP.md](UBUNTU_SETUP.md) instead of the Windows steps below.
+
 ## Start
 
 Double-click **`start_jarvis.bat`**. Jarvis takes about 20 seconds to warm up, says "Systems are online", then docks as a small orb in the bottom-right corner.

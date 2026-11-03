@@ -1,0 +1,12 @@
+# Settings for this machine only. scripts/setup_linux.sh copies this file to config.local.yaml, which is
+# not committed. Anything in config.local.yaml overrides config.yaml. Restart Jarvis after editing.
+
+claude_code:
+  exclude_paths: ["/var/www"]    # never read, brief or send these Claude Code projects (work repos)
+
+apps:
+  aliases:                       # Ubuntu names for apps config.yaml calls by their Windows names
+    file explorer: Files
+    explorer: Files
+    notepad: Text Editor
+    task manager: System Monitor

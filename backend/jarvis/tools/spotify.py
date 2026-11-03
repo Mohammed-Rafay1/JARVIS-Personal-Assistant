@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
+from ..config import WINDOWS
 from .base import Result, tool
 
 log = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ def _main_window():
 
 def now_playing() -> str | None:
     """Spotify's window title is 'Artist - Song' while playing, 'Spotify ...' when paused."""
+    if not WINDOWS:
+        return None
     w = _main_window()
     if w is None:
         return None
@@ -86,6 +89,11 @@ def _ensure_running() -> None:
 def _open_and_press(uri: str, pick) -> str | None:
     """Open a spotify: URI, wait for the page, press the button `pick(window)` returns.
     Returns the now-playing title, "" if playing but unknown, None if no button was found."""
+    if not WINDOWS:  # pressing Play needs Windows UI Automation: open the page and let the user press it
+        from ..linux import open_spotify
+
+        open_spotify(uri)
+        return None
     import pythoncom
 
     pythoncom.CoInitialize()  # UI Automation is COM; this runs on a worker thread

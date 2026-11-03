@@ -4,14 +4,28 @@ from __future__ import annotations
 import asyncio
 import time
 import traceback
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
-from .config import ROOT
+from .config import ROOT, WINDOWS
+
+_SETUP = "Run: .venv\\Scripts\\python scripts\\download_models.py" if WINDOWS else "Run: scripts/setup_linux.sh"
+_LINUX_FIX = {
+    "Microphone": "Check Settings > Sound > Input, and that PortAudio is installed: sudo apt install libportaudio2",
+    "Speaker": "Set a default output device in Settings > Sound.",
+    "Brain (Ollama)": "Run: scripts/setup_linux.sh (installs Ollama and the model inside this folder)",
+    "App index": "Reading the .desktop app list failed; see the log.",
+    "File search": "Jarvis scans your home folder for files; see the log.",
+    "Gmail": "Optional. See 'Gmail' in UBUNTU_SETUP.md.",
+    "Spotify": "Optional. Without the app, Jarvis opens Spotify's web player.",
+    "Overlay": "Run: scripts/setup_linux.sh",
+}
 
 
 def _check(name: str, fn: Callable[[], str], fix: str, results: list) -> None:
+    fix = fix if WINDOWS else _LINUX_FIX.get(name, fix)
     t = time.perf_counter()
     try:
         detail = fn()
@@ -92,11 +106,14 @@ def run(cfg: dict) -> int:
 
     def files():
         from .tools import CTX
-        from .tools.files import _search_index
+        from .tools.files import _search_index, _search_walk
 
         CTX.cfg = cfg
         from pathlib import Path
 
+        if not WINDOWS:
+            hits = _search_walk(["jarvis"], [], [Path.home()], 3)
+            return f"folder scan OK ({len(hits)} hits for 'jarvis')"
         hits = _search_index(["jarvis"], [], [Path.home()], 3)
         return f"Windows Search OK ({len(hits)} hits for 'jarvis')"
 
@@ -112,21 +129,27 @@ def run(cfg: dict) -> int:
     def spotify():
         from .tools.spotify import SPOTIFY_EXE
 
+        if not WINDOWS:
+            import shutil
+
+            if not (shutil.which("spotify") or Path("/snap/bin/spotify").exists()):
+                raise RuntimeError("Spotify desktop app not found")
+            return "desktop app installed"
         if not SPOTIFY_EXE.exists():
             raise RuntimeError("Spotify desktop app not found")
         return "desktop app installed"
 
     def overlay():
-        exe = ROOT / "ui" / "node_modules" / "electron" / "dist" / "electron.exe"
+        exe = ROOT / "ui" / "node_modules" / "electron" / "dist" / ("electron.exe" if WINDOWS else "electron")
         if not exe.exists():
             raise RuntimeError("electron missing")
         return "electron installed"
 
     _check("Microphone", mic, "Check Windows Settings > Privacy > Microphone, and the default input device.", results)
     _check("Speaker", speaker, "Set a default output device in Windows sound settings.", results)
-    _check("Voice (TTS)", tts, "Run: .venv\\Scripts\\python scripts\\download_models.py", results)
-    _check("Speech recognition", stt, "Run: .venv\\Scripts\\python scripts\\download_models.py", results)
-    _check("Wake word", wake, "Run: .venv\\Scripts\\python scripts\\download_models.py", results)
+    _check("Voice (TTS)", tts, _SETUP, results)
+    _check("Speech recognition", stt, _SETUP, results)
+    _check("Wake word", wake, _SETUP, results)
     _check("Brain (Ollama)", llm, f"Install Ollama, then: ollama pull {cfg['llm']['model']}", results)
     _check("App index", apps, "PowerShell Get-StartApps failed; see log.", results)
     _check("File search", files, "Windows Search service may be off; Jarvis will fall back to scanning.", results)

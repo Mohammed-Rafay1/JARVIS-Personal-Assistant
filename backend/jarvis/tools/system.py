@@ -4,6 +4,7 @@ from __future__ import annotations
 import ctypes
 import datetime as dt
 
+from ..config import WINDOWS
 from .base import Result, tool
 
 
@@ -32,5 +33,10 @@ async def calculate(expression: str) -> Result:
 
 @tool("Lock the computer screen")
 async def lock_screen() -> Result:
+    if not WINDOWS:
+        from ..linux import lock_screen as lock
+
+        lock()
+        return Result("Locking.", icon="system")
     ctypes.windll.user32.LockWorkStation()
     return Result("Locking.", icon="system")

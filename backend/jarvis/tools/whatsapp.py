@@ -17,10 +17,11 @@ import time
 
 from rapidfuzz import fuzz
 
+from ..config import WINDOWS
 from .base import Result, tool
 
 log = logging.getLogger(__name__)
-U32 = ctypes.windll.user32
+U32 = ctypes.windll.user32 if WINDOWS else None
 
 
 class WhatsAppError(RuntimeError):
@@ -267,6 +268,10 @@ def clear_ready_message() -> None:
       contact="Contact or chat name as it appears in WhatsApp", message="The message text")
 async def whatsapp_message(contact: str, message: str) -> Result:
     import asyncio
+
+    if not WINDOWS:
+        return Result("Sending WhatsApp messages from this laptop needs the WhatsApp Windows app, so I can't do "
+                      "that on Ubuntu.", ok=False, icon="whatsapp")
 
     try:
         chat = await asyncio.wait_for(asyncio.to_thread(open_chat_and_type, contact, message), timeout=40)

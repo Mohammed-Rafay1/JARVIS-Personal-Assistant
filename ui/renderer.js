@@ -400,6 +400,12 @@ document.addEventListener('mousemove', (e) => {
   if (on !== interactive) { interactive = on; host.setInteractive(on); }
 });
 document.addEventListener('mouseleave', () => { if (mode !== 'full' && interactive) { interactive = false; host.setInteractive(false); } });
+host.on('cursor', (p) => {  // Linux: the main process reports the pointer instead of mousemove
+  if (mode === 'full') return;
+  const el = p && document.elementFromPoint(p.x, p.y);
+  const on = !!(el && el.closest && el.closest('.interactive'));
+  if (on !== interactive) { interactive = on; host.setInteractive(on); }
+});
 
 $('hk').textContent = host.hotkey;
 setState('booting');
