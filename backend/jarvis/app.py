@@ -365,7 +365,8 @@ class Jarvis:
             self._wake_checking = False
         rest = wake_phrase(text) if text else None
         if rest is None or self.in_call or self.state != "idle" or self.muted:
-            log.info("wake check: no (%r)", text)
+            if text and text.strip():  # what it heard instead, to tune the names it accepts
+                log.info("wake check: no (%r)", text.strip()[:60])
             return
         log.info("wake (whisper): %r", text)
         # "Hey Jarvis, open Chrome" in one breath: skip the greeting and do it

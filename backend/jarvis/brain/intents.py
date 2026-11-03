@@ -77,7 +77,7 @@ STOP = re.compile(r"^(?:stop|stop talking|cancel|never ?mind|nothing|shut up|qui
 # only count after a greeting, so "Travis is late" never wakes it.
 _NAME = r"(?:jarvis|jarviss|jarvi|jarvas|jervis|jervais|javis|jarwis|derivis|derivi|devis|dear ?wiz|dear ?viss)"
 WAKE_TEXT = re.compile(
-    r"^\W*(?:(?:(?:hey|hi|hay|hey there|okay|ok|hello|yo|a)[\s,]+(?:" + _NAME[3:-1] + r"|travis|davis|service))"
+    r"^\W*(?:(?:(?:hey|hi|hay|hey there|okay|ok|hello|yo|a)[\s,]+(?:" + _NAME[3:-1] + r"|travis|davis|service|jerry|jarvey|jarvie|jarby|harvis|charvis))"
     r"|" + _NAME + r")\b[\s,.!?]*(?P<rest>.*)$", re.I)
 
 

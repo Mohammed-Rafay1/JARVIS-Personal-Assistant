@@ -260,3 +260,17 @@ def test_not_sleep(said):
 
 def test_press_windows_l_locks():
     assert parse("Press windows+L for activating sleep mode through terminal").tool == "lock_screen"
+
+
+@pytest.mark.parametrize("heard", ["Hey, Jerry.", "Okay Jarvey", "Hey Jarvis!"])
+def test_backup_wake_accepts_misheard_name_after_hey(heard):
+    from jarvis.brain.intents import wake_phrase
+
+    assert wake_phrase(heard) == ""
+
+
+@pytest.mark.parametrize("heard", ["Jerry is late", "I know, I know", "Name,"])
+def test_backup_wake_ignores_talk(heard):
+    from jarvis.brain.intents import wake_phrase
+
+    assert wake_phrase(heard) is None
