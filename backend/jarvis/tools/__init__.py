@@ -6,4 +6,5 @@ CTX = SimpleNamespace(cfg={}, apps=None, gmail=None, contacts={})
 
 
 def load_all() -> None:
-    from . import ai_chat, apps, browser, claude_code, files, gmail, media, spotify, system, whatsapp, youtube  # noqa: F401
+    from . import (ai_chat, apps, browser, claude_code, files, gmail, media, spotify, system,  # noqa: F401
+                   web_research, whatsapp, youtube)

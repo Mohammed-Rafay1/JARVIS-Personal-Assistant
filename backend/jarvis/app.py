@@ -51,7 +51,7 @@ CAPABILITIES = [
 ]
 _REVEALS = {"app", "web", "youtube", "spotify", "folder"}
 _OPENS_WINDOW = {"open_app", "open_website", "web_search", "play_youtube", "play_spotify", "play_spotify_liked",
-                 "open_folder", "open_file", "whatsapp_message", "ai_research"}
+                 "open_folder", "open_file", "whatsapp_message", "ai_research", "web_research"}
 _ACTION_WORDS = re.compile(r"\b(?:open|launch|start|run|play|put on|search|google|look up|find|show|go to|visit|"
                            r"navigate|emails?|e-mails?|mails?|inbox|send|write to|draft|volume|louder|quieter|"
                            r"spotify|youtube|website|folder|file|app|project|projects|claude)\b")
@@ -86,6 +86,7 @@ class Jarvis:
         self._heard_conf = 0.0          # recogniser confidence of the last spoken request
         self._remote_said: list[str] | None = None   # replies collected for a WhatsApp command
         self._remote_cards: list[dict] = []
+        self._remote_progress = None   # sends a "working on it" message to WhatsApp right away
         self._remote_lock = asyncio.Lock()
         self._cc_last: tuple[str, str] | None = None   # (folder, name) of the last project given a prompt
         self._speech_q: asyncio.Queue | None = None
@@ -389,6 +390,11 @@ class Jarvis:
         """'Hey Jarvis', the hotkey or a click: start a call, or (mid-call) cut in and listen."""
         if self.muted and source == "voice":
             return
+        if self._remote_said is not None and source in ("voice", "barge-in"):
+            # a command from your phone is running; a "Hey Jarvis" heard in the room (often a false one)
+            # must not cancel it or mix the laptop's greeting into your WhatsApp reply
+            log.info("wake (%s) ignored: a WhatsApp command is in progress", source)
+            return
         log.info("wake (%s)", source)
         self._interrupt()
         self.speak_aloud = True
@@ -660,11 +666,19 @@ class Jarvis:
         log.info("tool %s %s", name, args)
         if name == "claude_project_status":  # reading + summarising takes ~15 s on this CPU; don't go silent
             self._queue_speech("One moment, checking the project.")
+        note = ""
         if name == "ai_research":  # the assistants take 20-60 s to answer
             from .tools.ai_chat import _names, parse_services
 
-            self._queue_speech(f"Researching that in {_names(parse_services(args.get('services', '')))}, "
-                               f"{self.cfg['address_as']}. I'll summarise when they're done.")
+            note = (f"Researching that in {_names(parse_services(args.get('services', '')))}, "
+                    f"{self.cfg['address_as']}. I'll summarise when they're done.")
+        elif name == "web_research":
+            note = f"Looking that up on Google, {self.cfg['address_as']}."
+        if note:
+            if self._remote_said is not None and self._remote_progress:
+                self._remote_progress(note)  # on WhatsApp straight away, not with the answer a minute later
+            else:
+                self._queue_speech(note)
         if self.in_call and name in _OPENS_WINDOW:
             # shrink the call first: a full-screen window on top stops Chromium apps (Spotify, browsers)
             # from rendering, so Spotify's search results never appear and Play can't be pressed
@@ -1294,7 +1308,8 @@ class Jarvis:
         self._start_capture(self.cfg["listening"]["follow_up_seconds"])
 
     # ------------------------------------------------------------------ WhatsApp commands
-    async def handle_remote(self, text: str, voice: bool, conf: float = 0.0) -> tuple[list[str], list[str]]:
+    async def handle_remote(self, text: str, voice: bool, conf: float = 0.0,
+                            progress=None) -> tuple[list[str], list[str]]:
         """One command from your phone. Runs exactly like a spoken or typed one (same commands, same
         confirmations), silently on the laptop. Returns (what Jarvis said, cards as text)."""
         from .services.whatsapp_remote import card_text
@@ -1307,7 +1322,7 @@ class Jarvis:
             else:
                 return [f"I'm busy on the laptop right now, {self.cfg['address_as']}. Please send that again "
                         "in a minute."], []
-            self._remote_said, self._remote_cards = [], []
+            self._remote_said, self._remote_cards, self._remote_progress = [], [], progress
             self.speak_aloud = False
             self.ui.send({"type": "reply", "text": "", "append": False})
             if voice:
@@ -1320,7 +1335,7 @@ class Jarvis:
                 self._remote_said.append("That was interrupted on the laptop, sir.")
             finally:
                 said, cards = self._remote_said, self._remote_cards
-                self._remote_said, self._remote_cards = None, []
+                self._remote_said, self._remote_cards, self._remote_progress = None, [], None
                 self.speak_aloud = True
             return said, [card_text(c) for c in cards]
 

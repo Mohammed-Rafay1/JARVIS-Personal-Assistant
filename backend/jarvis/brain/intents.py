@@ -354,6 +354,18 @@ def _research(t: str) -> Intent | None:
         return None
     t2 = re.sub(r"[\s,]*(?:and |then )?(?:tell|give|read|send) me (?:a |the )?(?:short |quick |brief )?summary"
                 r"(?: of (?:it|that|the answers?))?$|[\s,]*(?:and |then )?summari[sz]e(?: it| that)?$", "", t)
+    # on Google / the web: open the results and read back what they say
+    g = re.search(r"\s+(?:on|in|using|with|via|from|through) (?:google|the web|the internet)$|\s+online$", t2)
+    m = re.match(r"^(?:do (?:some |a )?(?:quick )?research|research|look into|find out|search|look up|find)"
+                 r"(?: about| on| for| into| up)? (?P<q>.+)$", t2[:g.start()]) if g else None
+    if m:
+        return Intent("web_research", {"query": m.group("q")})
+    m = re.match(r"^(?:google research|research on google|research online|use google to research|"
+                 r"research (?:it |this )?(?:on|using) google)(?: about| on| for)? (?P<q>.+)$", t2) \
+        or (t2 != t and re.match(r"^(?:search google for|google search for|google|search the web for|"
+                                 r"search online for) (?P<q>.+)$", t2))  # "search Google for X and tell me the summary"
+    if m:
+        return Intent("web_research", {"query": m.group("q")})
     svc = ""
     m = re.search(r"\s+(?:on|in|using|with|via|from|through) (?P<svc>" + _AI + r")$", t2)
     if m:
@@ -454,7 +466,7 @@ def _open(t: str, resolve_open: Callable[[str, str], Intent] | None) -> Intent |
 
 _IN_BROWSER = re.compile(r"\s+(?:on|in|using|with|through)\s+(?:the |my )?"
                          r"(google chrome|chrome|microsoft edge|edge|firefox|brave|web browser|browser)$")
-_WEB_TOOLS = {"open_website", "web_search", "play_youtube"}
+_WEB_TOOLS = {"open_website", "web_search", "play_youtube", "web_research"}
 
 
 def parse(text: str, default_service: str = "youtube",

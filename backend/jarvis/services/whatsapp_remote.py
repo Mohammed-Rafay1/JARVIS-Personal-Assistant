@@ -224,7 +224,9 @@ class WhatsAppRemote:
             sir = self.jarvis.cfg.get("address_as", "sir")
             said, cards = [f"At your service, {sir}. Tell me what you need, by text or voice note."], []
         else:
-            said, cards = await self.jarvis.handle_remote(text, voice=voice, conf=conf)
+            said, cards = await self.jarvis.handle_remote(
+                text, voice=voice, conf=conf,
+                progress=lambda note: self.send({"type": "send", "chat": chat, "text": note}))
         reply = " ".join(said).strip() or "Done, sir."
         parts = ([f"🎙️ _{text}_"] if voice else []) + [reply] + [c for c in cards if c]
         self.send({"type": "send", "chat": chat, "text": "\n\n".join(parts)})

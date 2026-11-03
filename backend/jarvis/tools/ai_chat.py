@@ -86,10 +86,37 @@ def first_sentences(text: str, n: int = 2) -> str:
     return " ".join(re.split(r"(?<=[.!?])\s+", flat)[:n])[:400]
 
 
+_QUESTION = re.compile(r"^(?:what|who|whom|whose|why|how|when|where|which|is|are|was|were|can|could|should|would|"
+                       r"will|do|does|did|explain|compare|describe|list|tell me|give me|write|summari[sz]e|define)\b",
+                       re.I)
+SUMMARY_TAG = "In short:"
+
+
+def research_prompt(query: str) -> str:
+    """Your words as a prompt that gets a useful answer: "hitler" alone got a one-word chat. A topic becomes
+    a request for a structured overview; a question stays your question. Both ask for a closing "In short:"
+    line, which Jarvis reads out (faster and truer than summarising locally)."""
+    q = re.sub(r"\s+", " ", query).strip().rstrip(".?!")
+    q = re.sub(r"^(?:about|on|into|regarding|the topic of)\s+", "", q, flags=re.I)
+    close = f' End with one line starting "{SUMMARY_TAG}" that sums up the answer in two plain sentences.'
+    if _QUESTION.match(q):
+        return f"{q[:1].upper()}{q[1:]}? Answer clearly and accurately, with the key facts." + close
+    return (f"Research {q} and give me a clear, well-structured overview: what or who it is, the key facts "
+            "and dates, why it matters, and any important context or debate. Keep it concise." + close)
+
+
+def in_short(text: str) -> str:
+    """The answer's own closing summary, if it wrote one."""
+    m = re.search(re.escape(SUMMARY_TAG) + r"\s*(.+)", text, re.I | re.S)
+    return re.sub(r"\s+", " ", m.group(1)).strip()[:500] if m else ""
+
+
 def answer_after(texts: list[str], prompt: str) -> str:
-    """The conversation's text in reading order -> what came after your question (the answer so far)."""
-    key = re.sub(r"\s+", " ", prompt).strip().lower()[:40]
-    at = max((i for i, t in enumerate(texts) if key and key in re.sub(r"\s+", " ", t).lower()), default=-1)
+    """The conversation's text in reading order -> what came after your question (the answer so far).
+    Your question is the FIRST text that starts like it; a short question's words also appear all
+    through the answer, so matching the last one never settled (it once waited out 150 s)."""
+    key = re.sub(r"\s+", " ", prompt).strip().lower()[:60]
+    at = next((i for i, t in enumerate(texts) if key and key in re.sub(r"\s+", " ", t).lower()), -1)
     if at < 0:
         return ""
     return clean("\n".join(t for t in texts[at + 1:] if not _NOISE.match(t.strip())))
@@ -265,7 +292,7 @@ def submit(key: str, prompt: str):
     return w
 
 
-def wait_answer(key: str, w, prompt: str, timeout: float = 150) -> Answer:
+def wait_answer(key: str, w, prompt: str, timeout: float = 180) -> Answer:
     """Read the conversation until the answer stops growing and the app no longer shows Stop."""
     _com()
     app = APPS[key]
@@ -316,6 +343,9 @@ async def summarise(question: str, answers: list[Answer]) -> str:
     got = [a for a in answers if a.text]
     if not got:
         return ""
+    own = [in_short(a.text) for a in got if in_short(a.text)]
+    if own and len(own) == len(got) == 1:
+        return own[0]  # the answer's own closing summary: instant
     if CTX.llm and await CTX.llm.available():
         body = "\n\n".join(f"{APPS[a.service].name}'s answer:\n{a.text[:1500]}" for a in got)
         try:
@@ -327,7 +357,7 @@ async def summarise(question: str, answers: list[Answer]) -> str:
                 return re.sub(r"\s+", " ", re.sub(r"[*#`]", "", text)).strip()
         except Exception as e:
             log.warning("research summary failed: %s", e.__class__.__name__)
-    return first_sentences(got[0].text, 3)
+    return own[0] if own else first_sentences(got[0].text, 3)
 
 
 def _names(keys: list[str]) -> str:
@@ -338,7 +368,9 @@ def _names(keys: list[str]) -> str:
       query="The question or topic", services="chatgpt, claude, or both (default)")
 async def ai_research(query: str, services: str = "") -> Result:
     keys = parse_services(services)
-    answers = await ask_all(keys, query)
+    prompt = research_prompt(query)
+    log.info("research prompt: %r", prompt)
+    answers = await ask_all(keys, prompt)
     summary = await summarise(query, answers)
     sir = CTX.cfg.get("address_as", "sir")
     missing = [a.service for a in answers if a.problem == "not_installed"]
