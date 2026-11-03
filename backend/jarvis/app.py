@@ -98,6 +98,7 @@ class Jarvis:
         self.call_turns = 0
         self.last_stt = 0.0
         self._wake_checking = False
+        self._wake_verifying = False
         self._speech_gen = 0
         self._barge_echo: list[float] = []
         self._barge_run = 0
@@ -291,10 +292,11 @@ class Jarvis:
                     sure = float(self.cfg["wake_word"].get("verify_below", 0.5))
                     if speaking or self.in_call or self.wake.last_score >= sure:
                         self.loop.call_soon_threadsafe(lambda p=pre: self._wake("voice", p))
-                    elif not self._wake_checking:
+                    elif not self._wake_verifying:
                         # 3 Nov: a video playing on the laptop scored 0.18-0.20 and kept opening Jarvis.
                         # A weak score only wakes it if Whisper hears "Jarvis" in the last two seconds.
-                        self._wake_checking = True
+                        # (Its own flag: sharing the backup check's flag dropped real calls at 23:48.)
+                        self._wake_verifying = True
                         clip = np.concatenate(list(self._wake_ring)).astype(np.float32) / 32768.0
                         self.loop.call_soon_threadsafe(
                             lambda a=clip, s=self.wake.last_score: asyncio.ensure_future(self._verify_wake(a, s)))
@@ -371,9 +373,9 @@ class Jarvis:
         from .brain.intents import mentions_wake
 
         try:
-            text = await asyncio.to_thread(self.stt.quick, audio)
+            text = await asyncio.to_thread(self.stt.quick, audio, 3.0)  # wait out a backup check
         finally:
-            self._wake_checking = False
+            self._wake_verifying = False
         if not mentions_wake(text or "") or self.in_call or self.state != "idle" or self.muted:
             log.info("wake rejected (score %.2f): heard %r", score, (text or "").strip()[:60])
             return

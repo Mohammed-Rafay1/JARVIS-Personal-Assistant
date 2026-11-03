@@ -73,12 +73,13 @@ class STT:
                     log.warning("STT re-check model unavailable: %s", e)
             threading.Thread(target=load_accurate, daemon=True).start()
 
-    def quick(self, audio: np.ndarray) -> str:
-        """Fast pass only, no re-check or debug clips: used to spot "Hey Jarvis" in idle speech."""
+    def quick(self, audio: np.ndarray, wait: float = 0.0) -> str:
+        """Fast pass only, no re-check or debug clips: used to spot "Hey Jarvis" in idle speech.
+        wait: seconds to wait for another recognition to finish instead of giving up."""
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         if peak < 0.01:
             return ""
-        if not self._busy.acquire(blocking=False):
+        if not (self._busy.acquire(timeout=wait) if wait else self._busy.acquire(blocking=False)):
             return ""  # a real request is being recognised; the idle wake check can skip this phrase
         try:
             segments, _ = self._run(self.model, _trim(audio / peak * 0.9))
