@@ -301,10 +301,20 @@ def _song_target(q: str) -> str:
 
 def _claude(t: str) -> Intent | None:
     """Claude Code projects: list them, a project's status, or a task for one."""
-    m = re.match(r"^(?:ask|tell|get) claude(?: code)? (?:in |for |on |with )?(?:the |my )?(?P<p>[\w .'-]+?)"
+    # a prompt for Claude Code. Without a project named, Jarvis asks which project (and which chat) first.
+    m = re.match(r"^(?:ask|tell|get|have) claude(?: code)? (?:in|for|on|with) (?:the |my )?(?P<p>[\w .'-]+?)"
                  r"(?: project)? to (?P<task>.+)$", t)
     if m:
         return Intent("claude_code_task", {"project": m.group("p"), "task": m.group("task")})
+    m = re.match(r"^(?:ask|tell|get|have) claude code to (?P<task>.+)$", t) \
+        or re.match(r"^(?:give|send|pass) (?:this |the |a |my )?(?:prompt|task|command|request) to claude code"
+                    r"(?: in (?:the |my )?(?P<p>[\w .'-]+?)(?: project)?)?[:,]? (?P<task>.+)$", t) \
+        or re.match(r"^(?:give|send) claude code (?:this |the |a )?(?:prompt|task|command)[:,]? (?P<task>.+)$", t) \
+        or re.match(r"^open claude code and (?:ask it to |tell it to |give it this prompt[:,]? |make it )?(?P<task>.+)$", t) \
+        or re.match(r"^claude code[:,]? (?!(?:projects?|status|update|updates)\b)(?P<task>\w+ .+)$", t)
+    if m:
+        return Intent("claude_code_task", {"project": (m.groupdict().get("p") or "").strip(),
+                                           "task": m.group("task").strip()})
     if re.search(r"^(?:what(?:'s| is| are)? )?(?:the )?(?:status|state|update|updates) (?:of|on) (?:all )?my projects"
                  r"|^(?:what are|show|list|tell me(?: about)?|show me)(?: me)?(?: all)? (?:my|the) (?:claude(?: code)? )?projects"
                  r"|^(?:what am i working on|my projects|claude(?: code)? projects|project status|projects status)$"
@@ -323,6 +333,50 @@ def _claude(t: str) -> Intent | None:
         or re.match(r"^what(?:'s| is) (?:happening|going on) (?:in|with) (?:the |my )?(?P<p>.+?)(?: project)?$", t)
     if m:
         return Intent("claude_project_status", {"project": m.group("p")})
+    return None
+
+
+_AI = r"(?:chat ?gpt|gpt|claude|both(?: of them)?|chat ?gpt and claude|claude and chat ?gpt)"
+_NOT_RESEARCH = re.compile(r"\b(?:google|the web|online|internet|youtube|spotify|files?|folders?|documents?|pdf|"
+                           r"e-?mails?|inbox|my computer|laptop|whatsapp|contacts?)\b")
+
+
+def _ai_services(name: str) -> str:
+    name = (name or "").replace(" ", "")
+    return "chatgpt" if "gpt" in name and "claude" not in name else \
+        "claude" if "claude" in name and "gpt" not in name else ""
+
+
+def _research(t: str) -> Intent | None:
+    """Questions to research in new ChatGPT and Claude chats: "research X", "search about X", "ask ChatGPT
+    X", "open ChatGPT and research X", "search X on Claude". Naming one assistant asks only that one."""
+    if re.search(r"\bclaude code\b", t):
+        return None
+    t2 = re.sub(r"[\s,]*(?:and |then )?(?:tell|give|read|send) me (?:a |the )?(?:short |quick |brief )?summary"
+                r"(?: of (?:it|that|the answers?))?$|[\s,]*(?:and |then )?summari[sz]e(?: it| that)?$", "", t)
+    svc = ""
+    m = re.search(r"\s+(?:on|in|using|with|via|from|through) (?P<svc>" + _AI + r")$", t2)
+    if m:
+        svc, t2 = m.group("svc"), t2[:m.start()]
+    m = re.match(r"^open (?P<svc>chat ?gpt|claude)(?: and| then|,)? (?:ask(?: it)?(?: to)?|research|search|find out|"
+                 r"look up|tell me)(?: about| for| on| into)? (?P<q>.+)$", t2) \
+        or re.match(r"^ask (?P<svc>" + _AI + r")(?: to (?:research|search|find out|look up)(?: about| for)?| about| for|"
+                    r":|,)? (?P<q>.+)$", t2)
+    if m:  # "ask Claude to explain recursion" keeps "explain recursion"
+        return Intent("ai_research", {"query": re.sub(r"^to ", "", m.group("q")),
+                                      "services": _ai_services(m.group("svc"))})
+    m = re.match(r"^(?:do (?:some |a )?(?:quick )?research|research|look into|find out|dig into)(?: about| on| into|"
+                 r" for| more about)? (?P<q>.+)$", t2)
+    if m:
+        return Intent("ai_research", {"query": m.group("q"), "services": _ai_services(svc)})
+    m = re.match(r"^(?:search|look up|find|google)(?: about| for| up)? (?P<q>.+)$", t2)
+    if m and svc:  # "search X on ChatGPT"
+        return Intent("ai_research", {"query": m.group("q"), "services": _ai_services(svc)})
+    # plain "search X": research it, unless it names Google, YouTube, files, email...
+    m = re.match(r"^(?:search for information (?:on|about)|search about|search for|search|look up) (?P<q>.+)$", t2)
+    if m and not _NOT_RESEARCH.search(t2) and not re.search(r"\b(?:" + _FILE_KIND + r")$", t2) \
+            and not m.group("q").startswith("my "):  # "search for my CV" is a file
+        return Intent("ai_research", {"query": m.group("q"), "services": ""})
     return None
 
 
@@ -417,6 +471,8 @@ def parse(text: str, default_service: str = "youtube",
     if intent.tool in ("open_app", "open_any", "open_file"):  # "open whatsapp on chrome" means the website
         name = intent.args.get("name") or intent.args.get("query", "")
         intent = Intent("open_website", {"site": name})
+    if intent.tool == "ai_research":  # "search for X in Edge": a browser named means a web search
+        intent = Intent("web_search", {"query": intent.args["query"]})
     if intent.tool in _WEB_TOOLS:
         intent.args["browser"] = browser
     return intent
@@ -453,7 +509,7 @@ def _parse(text: str, default_service: str = "youtube",
         hit = f(t)
         if hit:
             return hit
-    hit = _whatsapp(t) or _claude(t) or _email(t) or _liked(t) or _play(t, default_service)
+    hit = _whatsapp(t) or _claude(t) or _email(t) or _liked(t) or _play(t, default_service) or _research(t)
     if hit:
         return hit
     m = re.match(r"^(?:search google for|search the web for|google search for|search online for|look online for|"

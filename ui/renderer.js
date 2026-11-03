@@ -255,6 +255,17 @@ function showCard(c) {
       addCard(el('div', {}, el('h4', {}, c.from), el('div', { style: 'font-weight:600;margin-bottom:6px' }, c.subject),
         el('div', { class: 'body' }, c.body)), { ttl: 60000 });
       break;
+    case 'research':
+      addCard(el('div', {}, el('h4', {}, `Research · ${c.query}`),
+        el('div', { class: 'body', style: 'margin-bottom:8px' }, c.summary || 'No answer yet.'),
+        (c.answers || []).map((a) => el('div', {},
+          el('div', { class: 'cap-title', style: 'margin-top:10px' }, a.service),
+          el('div', { class: 'sub', style: 'white-space:normal' },
+            a.text ? (a.text.length > 320 ? `${a.text.slice(0, 320)}…` : a.text)
+              : (a.problem === 'not_installed' ? 'The app didn’t open.'
+                : a.problem === 'unread' ? 'The answer is in the app.' : 'Not asked: I couldn’t type into it safely.'))))),
+        { sticky: true });
+      break;
     case 'media':
       $('pill-line').textContent = `${c.service === 'youtube' ? '▶' : '♫'} ${c.title}`;
       addCard(el('div', { class: 'media' },

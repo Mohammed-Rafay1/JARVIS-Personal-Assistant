@@ -81,6 +81,13 @@ def card_text(card: dict[str, Any]) -> str:
         return f"*{card.get('name', '')}* ({card.get('ago', '')})\n{card.get('summary', '')}"
     if kind == "capabilities":
         return "\n".join(f"*{g['title']}*: " + "; ".join(g["items"]) for g in card.get("groups", []))
+    if kind == "research":
+        parts = [f"*{a['service']}*\n{a['text'][:1200]}" if a.get("text")
+                 else f"*{a['service']}*: " + {"not_installed": "the app didn't open on the laptop.",
+                                               "unread": "the answer is in the app on the laptop."}.get(
+                     a.get("problem"), "not asked (I couldn't type into it safely).")
+                 for a in card.get("answers", [])]
+        return "\n\n".join(parts)
     if kind == "prompt_draft":
         return f"*Claude Code task ({card.get('project', '')})*\n{card.get('text') or card.get('task', '')}"
     return ""

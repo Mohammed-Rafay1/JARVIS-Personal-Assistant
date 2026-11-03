@@ -63,7 +63,8 @@ ducking:
   level: 0.25
 
 claude_code:
-  allow_tasks: false         # read-only: Jarvis briefs you on projects but never sends Claude Code work
+  allow_tasks: true          # prompts for Claude Code: Jarvis asks which project and which chat, reads it back, sends on "send it" (false = read-only)
+  new_project_dir: "~/Desktop"   # where "new project" creates its folder
   ai_summary: false          # true = local-AI summary (nicer wording, but over a minute on this laptop)
 
 files:

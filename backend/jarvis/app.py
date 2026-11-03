@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import os
 import re
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -49,7 +51,7 @@ CAPABILITIES = [
 ]
 _REVEALS = {"app", "web", "youtube", "spotify", "folder"}
 _OPENS_WINDOW = {"open_app", "open_website", "web_search", "play_youtube", "play_spotify", "play_spotify_liked",
-                 "open_folder", "open_file", "whatsapp_message"}
+                 "open_folder", "open_file", "whatsapp_message", "ai_research"}
 _ACTION_WORDS = re.compile(r"\b(?:open|launch|start|run|play|put on|search|google|look up|find|show|go to|visit|"
                            r"navigate|emails?|e-mails?|mails?|inbox|send|write to|draft|volume|louder|quieter|"
                            r"spotify|youtube|website|folder|file|app|project|projects|claude)\b")
@@ -85,6 +87,7 @@ class Jarvis:
         self._remote_said: list[str] | None = None   # replies collected for a WhatsApp command
         self._remote_cards: list[dict] = []
         self._remote_lock = asyncio.Lock()
+        self._cc_last: tuple[str, str] | None = None   # (folder, name) of the last project given a prompt
         self._speech_q: asyncio.Queue | None = None
         self.notices: list[dict] = []
         self.in_call = False          # a "call" = continuous conversation after a wake, until stop/close
@@ -603,6 +606,9 @@ class Jarvis:
                                       card={"kind": "capabilities",
                                                   "groups": [{"title": t, "items": i} for t, i in CAPABILITIES]}))
                 continue
+            if intent.tool == "claude_code_task":  # which project, which chat, then read back: never straight away
+                results.append(await self._claude_prompt(intent.args.get("task", ""), intent.args.get("project", "")))
+                continue
             if intent.tool == "say":  # a fixed answer, e.g. something Jarvis can't do yet
                 results.append(Result(intent.args["text"]))
                 continue
@@ -654,6 +660,11 @@ class Jarvis:
         log.info("tool %s %s", name, args)
         if name == "claude_project_status":  # reading + summarising takes ~15 s on this CPU; don't go silent
             self._queue_speech("One moment, checking the project.")
+        if name == "ai_research":  # the assistants take 20-60 s to answer
+            from .tools.ai_chat import _names, parse_services
+
+            self._queue_speech(f"Researching that in {_names(parse_services(args.get('services', '')))}, "
+                               f"{self.cfg['address_as']}. I'll summarise when they're done.")
         if self.in_call and name in _OPENS_WINDOW:
             # shrink the call first: a full-screen window on top stops Chromium apps (Spotify, browsers)
             # from rendering, so Spotify's search results never appear and Play can't be pressed
@@ -729,6 +740,8 @@ class Jarvis:
             self.ui.send({"type": "card", "kind": "clear"})
             await self._deliver([await self.run_tool("claude_project_status", {"project": target})])
             return True
+        if kind in ("cc_project", "cc_new_name", "cc_chat"):
+            return await self._claude_prompt_step(p, t, raw)
         if kind == "claude_task":  # "What would you like Claude Code to do next?" -> the task, in your words
             self.pending = None
             if STOP.match(t):
@@ -950,6 +963,112 @@ class Jarvis:
 
             self._set_state("acting", icon="mail")
             await self._deliver([await summarise_message(msgs[idx - 1 if idx > 0 else -1])])
+
+    # ------------------------------------------------------------------ Claude Code prompts
+    async def _claude_prompt(self, task: str, project: str = "") -> Result:
+        """Step 1: which project? Nothing is sent to Claude Code until you've picked a project and a chat,
+        and confirmed the prompt read back to you."""
+        from .tools.claude_code import _ago, find_project, list_projects, tasks_allowed
+
+        if not tasks_allowed():
+            return Result("I'm in read-only mode for Claude Code, sir. I can brief you on any project, but I won't "
+                          "send it work until you switch that on.", icon="code")
+        if not task:
+            return Result("What would you like Claude Code to do?", icon="code")
+        if project:
+            p = await asyncio.to_thread(find_project, project)
+            if p:
+                return self._claude_chat_question(task, p.cwd, p.name, p.session.stem, p.title)
+        projects = await asyncio.to_thread(list_projects, 6)
+        last = self._cc_last
+        if last and last[0] in [q.cwd for q in projects]:  # last time's project first
+            projects.sort(key=lambda q: q.cwd != last[0])
+        names = [re.sub(r"[-_]+", " ", q.name) for q in projects]
+        hint = f" Last time it was {re.sub(r'[-_]+', ' ', last[1])}." if last else ""
+        card = {"kind": "choices", "title": "Which project for Claude Code?",
+                "items": [q.name for q in projects] + ["New project"],
+                "subs": [f"{q.title or 'session'} · {_ago(q.updated)}" for q in projects] + ["Create a new folder"]}
+        listed = ", ".join(f"{i}, {n}" for i, n in enumerate(names, 1))
+        return Result(f"Which project should Claude Code work in, {self.cfg['address_as']}? {listed}. "
+                      f"Or say new project.{hint}", icon="code", card=card,
+                      pending={"kind": "cc_project", "task": task,
+                               "projects": [(q.cwd, q.name, q.session.stem, q.title) for q in projects]})
+
+    def _claude_chat_question(self, task: str, cwd: str, name: str, session: str, title: str) -> Result:
+        """Step 2: continue that project's latest chat, or start a new one?"""
+        spoken = re.sub(r"[-_]+", " ", name)
+        latest = f", {title}," if title else ""
+        card = {"kind": "choices", "title": f"Claude Code · {name}",
+                "items": [f"Continue latest chat{': ' + title if title else ''}", "New chat"]}
+        return Result(f"In {spoken}, shall I continue your latest chat{latest} or start a new chat?", icon="code",
+                      card=card, pending={"kind": "cc_chat", "task": task, "cwd": cwd, "name": name,
+                                          "session": session})
+
+    async def _claude_prompt_step(self, p: dict, t: str, raw: str) -> bool:
+        from .tools.claude_code import prepare_task
+
+        kind = p["kind"]
+        if STOP.match(t) or NO.match(t):
+            self.pending = None
+            self.ui.send({"type": "card", "kind": "clear"})
+            await self.say("Okay, nothing sent to Claude Code.", then_idle=True)
+            return True
+        if kind == "cc_project":
+            projects = p["projects"]
+            idx = parse_choice(t)
+            if re.search(r"\bnew\b", t) or idx == len(projects) + 1:
+                self.pending = {"kind": "cc_new_name", "task": p["task"]}
+                await self.say("What should I call the new project?", follow=True, then_idle=False)
+                return True
+            pick = None
+            if idx is not None and (idx == -1 or 1 <= idx <= len(projects)):
+                pick = projects[idx - 1 if idx > 0 else -1]
+            elif re.search(r"\b(?:same|last|previous) (?:one|project)\b|^same$", t) and self._cc_last:
+                pick = next((q for q in projects if q[0] == self._cc_last[0]), None)
+            else:
+                pick = next((q for q in projects if _project_words(q[0]) and
+                             re.search(r"\b" + re.escape(_project_words(q[0])) + r"\b", _project_words(t))), None)
+            if pick is None:
+                await self.say("Which one? Say its number, its name, or new project.", follow=True, then_idle=False)
+                return True
+            self.ui.send({"type": "card", "kind": "clear"})
+            await self._deliver([self._claude_chat_question(p["task"], *pick)])
+            return True
+        if kind == "cc_new_name":
+            name = re.sub(r"[^\w -]", "", re.sub(r"^(?:call it|name it|it's|its|the name is)\s+", "", raw.strip(),
+                                                 flags=re.I)).strip().rstrip(".")
+            if not name:
+                await self.say("Sorry, what name?", follow=True, then_idle=False)
+                return True
+            root = Path(os.path.expanduser(self.cfg.get("claude_code", {}).get("new_project_dir", "~/Desktop")))
+            folder = root / re.sub(r"\s+", "-", name)
+            existed = folder.exists()
+            folder.mkdir(parents=True, exist_ok=True)
+            log.info("claude code new project folder: %s (existed: %s)", folder, existed)
+            self.pending = None
+            self._cc_last = (str(folder), folder.name)
+            r = prepare_task(str(folder), folder.name, p["task"], "")
+            r.say = (f"{'That folder already exists, so I will use it. ' if existed else ''}"
+                     f"New project {name}, new chat. " + r.say)
+            await self._deliver([r])
+            return True
+        # cc_chat: continue the latest chat, or a new one
+        idx = parse_choice(t)
+        if re.search(r"\b(?:new|fresh|another|separate)\b", t) or idx == 2:
+            session = ""
+        elif re.search(r"\b(?:continue|existing|latest|same|old|current|last|previous|resume)\b", t) \
+                or idx == 1 or YES.match(t):
+            session = p["session"]
+        else:
+            await self.say("Continue the latest chat, or a new chat?", follow=True, then_idle=False)
+            return True
+        self.pending = None
+        self._cc_last = (p["cwd"], p["name"])
+        self.ui.send({"type": "card", "kind": "clear"})
+        r = prepare_task(p["cwd"], p["name"], p["task"], session)
+        r.say = ("Continuing your latest chat. " if session else "In a new chat. ") + r.say
+        await self._deliver([r])
+        return True
 
     async def _whatsapp_send(self, p: dict) -> None:
         """The ONLY path that sends a WhatsApp message: after you confirmed the exact text read back."""
@@ -1274,6 +1393,9 @@ class Jarvis:
                 if "@" in addr:
                     self._interrupt()
                     self.task = asyncio.create_task(self._handle_pending(addr, addr))
+        elif kind == "choose" and self.pending and self.pending.get("kind", "").startswith("cc_"):
+            self._interrupt()
+            self.task = asyncio.create_task(self.handle_text(str(int(msg.get("index", 0)) + 1), typed=True))
         elif kind == "choose" and self.pending:
             self._interrupt()
             self.task = asyncio.create_task(self._choose(int(msg.get("index", 0)) + 1))
