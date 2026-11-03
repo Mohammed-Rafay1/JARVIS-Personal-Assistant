@@ -137,6 +137,18 @@ def _media(t: str) -> Intent | None:
     return None
 
 
+_MACHINE = r"(?:the |my |this )?(?:laptop|computer|pc|system|machine|device)"
+
+
+def _sleep(t: str) -> bool:
+    """"put my laptop to sleep mode", "sleep the computer", "activate sleep mode" (not "go to sleep",
+    which is said to Jarvis)."""
+    return bool(re.match(rf"^(?:put|send|turn|switch|set) {_MACHINE} (?:to|into|in|on) (?:the )?sleep(?: mode)?$", t) or
+                re.match(rf"^(?:sleep|hibernate) {_MACHINE}$", t) or
+                re.match(rf"^{_MACHINE} (?:sleep mode|to sleep|go to sleep)$", t) or t == "sleep mode" or
+                re.match(rf"^(?:activate|enable|turn on|start) (?:the )?sleep mode(?: on {_MACHINE})?$", t))
+
+
 def _volume(t: str) -> Intent | None:
     m = re.match(r"^(?:set |change |turn |put )?(?:the )?(?:volume|sound) (?:to |at |level )?(\d{1,3})(?: ?%| percent)?$", t) \
         or re.match(r"^(?:set |change |put )?(?:the )?volume (?:level )?(?:to|at) (\d{1,3})(?: ?%| percent)?$", t)
@@ -511,8 +523,11 @@ def _parse(text: str, default_service: str = "youtube",
     if re.search(r"^(?:what(?:'s| is) (?:the |today's )?date(?: today)?|what day is (?:it|today)|today's date|"
                  r"what(?:'s| is) today|which day is (?:it|today)|what is the day today|date today)$", t):
         return Intent("tell_time", {"what": "date"})
-    if re.match(r"^lock (?:the |my |this )?(?:screen|computer|laptop|pc|workstation|system)$", t):
+    if re.match(r"^lock (?:the |my |this )?(?:screen|computer|laptop|pc|workstation|system)$", t) or \
+            re.match(r"^press (?:the )?(?:windows|win)(?: key)?(?: and| plus)? l\b", t):
         return Intent("lock_screen")
+    if _sleep(t):
+        return Intent("sleep_pc")
     from .calc import evaluate
 
     if evaluate(_WAKE.sub("", text.lower().strip())) is not None:

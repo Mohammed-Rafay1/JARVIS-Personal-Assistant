@@ -124,7 +124,9 @@ def _close_windows(name: str) -> list[str]:
             return True
         # Store apps (Calculator, Settings...) live inside ApplicationFrameHost: match on the title instead
         key = title.lower().replace(" ", "") if exe == "applicationframehost" else exe
-        if key in targets or any(t and fuzz.ratio(t, key) >= 85 for t in targets):
+        # "WhatsApp.Root.exe": match on the part before the dot too, or on a window titled exactly "WhatsApp"
+        keys = {key, key.split(".")[0], title.lower().replace(" ", "")} if exe != "explorer" else {key}
+        if keys & targets or any(t and fuzz.ratio(t, key) >= 85 for t in targets):
             win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)  # lets the app ask "save changes?"
             closed.add(exe)
         return True

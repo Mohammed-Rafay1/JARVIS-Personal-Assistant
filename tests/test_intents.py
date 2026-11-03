@@ -242,3 +242,21 @@ def test_received_question_means_email(spoken, expected):
 def test_email_on_my_behalf(spoken, to):
     got = parse(spoken)
     assert got is not None and got.tool == "email_ask_content" and got.args["to"] == to
+
+
+# ---------------------------------------------------------------- sleep and lock (from the log, 3 Nov)
+@pytest.mark.parametrize("said", [
+    "Can u put my laptop to sleep mode?", "Put my laptop to sleep mode", "put the computer to sleep",
+    "sleep my laptop", "activate sleep mode", "sleep mode", "laptop sleep mode",
+])
+def test_sleep(said):
+    assert parse(said).tool == "sleep_pc"
+
+
+@pytest.mark.parametrize("said", ["go to sleep", "My laptop is on sleep mode?", "I need sleep"])
+def test_not_sleep(said):
+    assert getattr(parse(said), "tool", None) != "sleep_pc"
+
+
+def test_press_windows_l_locks():
+    assert parse("Press windows+L for activating sleep mode through terminal").tool == "lock_screen"

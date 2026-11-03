@@ -54,9 +54,10 @@ _OPENS_WINDOW = {"open_app", "open_website", "web_search", "play_youtube", "play
                  "open_folder", "open_file", "whatsapp_message", "ai_research", "web_research"}
 _ACTION_WORDS = re.compile(r"\b(?:open|launch|start|run|play|put on|search|google|look up|find|show|go to|visit|"
                            r"navigate|emails?|e-mails?|mails?|inbox|send|write to|draft|volume|louder|quieter|"
-                           r"spotify|youtube|website|folder|file|app|project|projects|claude)\b")
+                           r"spotify|youtube|website|folder|file|app|project|projects|claude|close|press|sleep|"
+                           r"lock|shut ?down|restart|turn (?:on|off))\b")
 # commands whose words come from a fixed list, so the fast recogniser's text is reliable enough
-_CLOSED_INTENTS = {"stop", "help", "ack", "tell_time", "set_volume", "media_control", "lock_screen",
+_CLOSED_INTENTS = {"stop", "help", "ack", "tell_time", "set_volume", "media_control", "lock_screen", "sleep_pc",
                    "claude_projects", "check_email", "emails_to_reply", "close_app", "open_any", "open_website",
                    "play_spotify_liked", "email_ask_content", "whatsapp_ask", "calculate", "ask_song"}
 _THEN = re.compile(r"\s+(?:and then|then|and also|and)\s+(?=(?:open|launch|start|play|search|google|close|"
