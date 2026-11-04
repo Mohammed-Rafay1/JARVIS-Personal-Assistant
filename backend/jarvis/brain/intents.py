@@ -74,11 +74,13 @@ STOP = re.compile(r"^(?:stop|stop talking|cancel|never ?mind|nothing|shut up|qui
 
 
 # "Hey Jarvis" as Whisper writes it for different accents. Names that are also real names (Travis, Davis)
-# only count after a greeting, so "Travis is late" never wakes it.
+# only count after a greeting, so "Travis is late" never wakes it. The "hey" itself is often misheard
+# ("Edge Jarvis", 4 Nov), so any one short word before a clear "Jarvis" counts too.
 _NAME = r"(?:jarvis|jarviss|jarvi|jarvas|jervis|jervais|javis|jarwis|derivis|derivi|devis|dear ?wiz|dear ?viss)"
 WAKE_TEXT = re.compile(
-    r"^\W*(?:(?:(?:hey|hi|hay|hey there|okay|ok|hello|yo|a)[\s,]+(?:" + _NAME[3:-1] + r"|travis|davis|service|jerry|jarvey|jarvie|jarby|harvis|charvis))"
-    r"|" + _NAME + r")\b[\s,.!?]*(?P<rest>.*)$", re.I)
+    r"^\W*(?:(?:(?:hey|hi|hay|hey there|okay|ok|hello|yo|a|edge|hate|age|eh|aye)[\s,]+(?:" + _NAME[3:-1] +
+    r"|travis|davis|service|jerry|jarvey|jarvie|jarby|harvis|charvis))"
+    r"|(?:[a-z']{1,8}[\s,]+)?" + _NAME + r")\b[\s,.!?]*(?P<rest>.*)$", re.I)
 
 
 def mentions_wake(text: str) -> bool:

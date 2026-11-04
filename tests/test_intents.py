@@ -291,3 +291,17 @@ def test_weak_wake_rejected_for_other_speech(heard):
     from jarvis.brain.intents import mentions_wake
 
     assert not mentions_wake(heard)
+
+
+@pytest.mark.parametrize("heard", ["Edge Jarvis,", "Hate Jarvis.", "Hey, Jarvis!", "Jarvis,"])  # from the log, 4 Nov
+def test_backup_wake_accepts_misheard_hey(heard):
+    from jarvis.brain.intents import wake_phrase
+
+    assert wake_phrase(heard) == ""
+
+
+def test_backup_wake_keeps_the_command_after_a_misheard_hey():
+    from jarvis.brain.intents import wake_phrase
+
+    assert wake_phrase("Edge Jarvis, open Chrome") == "open Chrome"
+    assert wake_phrase("Edge of the table") is None and wake_phrase("Data Battalion.") is None
