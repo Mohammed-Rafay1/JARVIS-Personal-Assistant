@@ -59,6 +59,49 @@ _ACTION_WORDS = re.compile(r"\b(?:open|launch|start|run|play|put on|search|googl
                            r"navigate|emails?|e-mails?|mails?|inbox|send|write to|draft|volume|louder|quieter|"
                            r"spotify|youtube|website|folder|file|app|project|projects|claude|close|press|sleep|"
                            r"lock|shut ?down|restart|turn (?:on|off))\b")
+# A question or a reply in a conversation, not a command. These go to the model (without tools) even when they
+# mention apps or files: "How can you open any app?", "Should I start learning Python?", "No, I'm asking...".
+_CONVERSATION = re.compile(
+    r"^(?:how|why|what|what's|whats|who|who's|whose|when|where|which|is|isn't|are|aren't|am|was|were|do|don't|"
+    r"does|did|didn't|have|has|should|shall|would|might|may|tell me|explain|describe|teach me|"
+    r"(?:can|could) you (?:tell|explain|describe|teach|help me understand|advise|suggest|recommend)|"
+    r"i(?:'m| am| was) (?:asking|wondering|curious|saying|thinking|feeling|trying to understand|confused)|"
+    r"i (?:think|feel|believe|wonder|want to know|mean|meant|said|asked|need (?:some |your )?(?:advice|help|tips))|"
+    r"(?:any|some|give me|i need) (?:advice|tips|ideas|suggestions)|no|nope|yes|yeah|yep|okay|ok|so|but|and|"
+    r"well|actually|really|hmm|wow|nice|great|cool|thanks|thank you|interesting|that's|thats|you|you're|your)\b")
+# ...but "can you open the report?" is a request: if the commands couldn't read it, ask again instead
+_REQUEST = re.compile(r"^(?:please |(?:can|could|would|will) you (?:please )?"
+                      r"(?!tell|explain|describe|teach|help me understand|advise|suggest|recommend))")
+# "What?", "Pardon?", "Say that again": repeat the last thing Jarvis said
+_REPEAT = re.compile(
+    r"^(?:what|pardon|pardon me|sorry|excuse me|huh|come again|again|one more time|what did you (?:just )?say|"
+    r"(?:say|repeat) (?:that|it|yourself)(?: again)?|repeat|(?:can|could) you (?:say|repeat) (?:that|it)(?: again)?|"
+    r"i (?:didn'?t|did not|couldn'?t|could not) (?:hear|catch|get|understand) (?:you|that|it|what you said))$")
+
+
+# filler the small model tacks on after an answer ("How can I assist you today?"): never worth saying
+_OFFER = re.compile(r"^(?:how (?:else )?(?:can|may) i (?:assist|help)|is there anything (?:else|specific|more)|"
+                    r"(?:just )?let me know if|feel free to|if you (?:need|have) (?:any|more|anything)|"
+                    r"what (?:else )?can i (?:do|help)|anything else i can)", re.I)
+
+
+def _tidy_spoken(sentence: str) -> str:
+    """One sentence of a model reply, fit to say aloud: the small model sometimes writes markdown lists."""
+    s = re.sub(r"(?m)^\s*(?:[-•*]|\d{1,2}[.)])\s+", "", sentence)   # list markers at the start of a line
+    s = re.sub(r"\s*\n\s*\d{1,2}[.)]?\s*$", "", s)                   # "...confident:\n\n1." -> "...confident:"
+    s = re.sub(r"[*_#`]+", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return "" if re.fullmatch(r"\d{1,2}[.)]?|[-•]", s) else s
+
+
+def _is_conversation(raw: str, t: str) -> bool:
+    lowered = raw.lower().strip(" ,.!")
+    if _REQUEST.match(t) or _REQUEST.match(lowered):
+        return False
+    return (raw.rstrip().endswith("?") or len(t.split()) >= 11
+            or bool(_CONVERSATION.match(t)) or bool(_CONVERSATION.match(lowered)))
+
+
 # commands whose words come from a fixed list, so the fast recogniser's text is reliable enough
 _CLOSED_INTENTS = {"stop", "help", "ack", "tell_time", "set_volume", "media_control", "lock_screen", "sleep_pc",
                    "claude_projects", "check_email", "emails_to_reply", "close_app", "open_any", "open_website",
@@ -89,8 +132,11 @@ class Jarvis:
         self._pending_at = 0.0
         self._last_question = ""      # the last question the language model answered ("search it" looks it up)
         self.remote = None            # the WhatsApp link, once started (reports finished Claude Code tasks)
-        self.history: deque[dict] = deque(maxlen=8)  # a shorter prompt answers faster on this CPU
+        # up to five exchanges (trimmed in _chat): enough to hold a conversation, quick on this CPU
+        self.history: deque[dict] = deque()
         self._last_chat = 0.0
+        self._said: list[str] = []    # what Jarvis has said since you last spoke ("What?" repeats it)
+        self._last_reply = ""
         self.follow_up = False
         self.speak_aloud = True
         self.task: asyncio.Task | None = None
@@ -642,8 +688,15 @@ class Jarvis:
         t = normalize(text)
         conf, self._heard_conf = self._heard_conf, 0.0
         log.info("user: %r -> %r", text, t)
+        if self._said:  # the reply to the previous thing you said
+            self._last_reply, self._said = " ".join(self._said), []
         if not t:  # just "Hey Jarvis" (e.g. said again mid-call): acknowledge and keep listening
             await self.say("Yes?", then_idle=True)
+            return
+        if _REPEAT.match(t) and self._last_reply:  # "What?" / "Pardon?": say it again, slowly enough to catch
+            log.info("repeating the last reply")
+            waiting = bool(self.pending)
+            await self.say(self._last_reply, then_idle=not waiting, follow=waiting)
             return
         self._expire_pending()
         if self.pending:
@@ -753,7 +806,7 @@ class Jarvis:
         self._set_state("acting", icon=name.split("_")[-1])
         log.info("tool %s %s", name, args)
         if name == "claude_project_status":  # reading + summarising takes ~15 s on this CPU; don't go silent
-            self._queue_speech("One moment, checking the project.")
+            self._queue_speech("One moment, checking the project.", filler=True)
         note = ""
         if name == "ai_research":  # the assistants take 20-60 s to answer
             from .tools.ai_chat import _names, parse_services
@@ -1353,7 +1406,7 @@ class Jarvis:
     # ------------------------------------------------------------------ chat (LLM)
     async def _chat(self, text: str) -> None:
         if not await self.llm.available():
-            self._queue_speech("One moment, bringing my language model online.")
+            self._queue_speech("One moment, bringing my language model online.", filler=True)
             if not await self.llm.ensure_running():
                 await self._deliver([Result("My language model won't start, sir, so I can't answer that one. "
                                             "Commands like opening apps and playing music still work.", ok=False)])
@@ -1362,15 +1415,22 @@ class Jarvis:
         cold = not await self.llm.loaded()
         if cold:
             self.ui.send({"type": "reply", "text": "", "append": False})
-            self._queue_speech("One moment.")  # cold start takes a while on this CPU; don't leave silence
-        if time.monotonic() - self._last_chat > 600:
-            self.history.clear()  # a question from ten minutes ago only slows the model down now
+            self._queue_speech("One moment.", filler=True)  # cold start takes a while on this CPU; don't leave silence
+        if time.monotonic() - self._last_chat > 900:
+            self.history.clear()  # a chat from a quarter of an hour ago only slows the model down now
         self._last_chat = time.monotonic()
+        if len(self.history) >= 10:
+            # drop the oldest exchanges in one go rather than one per question: every change to the start of
+            # the conversation makes the model re-read all of it (~20 s on this CPU), so do that rarely
+            for _ in range(len(self.history) - 4):
+                self.history.popleft()
         self.history.append({"role": "user", "content": text})
         buf, spoken, tool_results = "", [], []
         # The 3B model gets confused by tool schemas on plain questions (it emits broken tool calls),
-        # and they cost ~700 prompt tokens. Only offer tools when the request sounds like an action.
-        tools = llm_tools() if _ACTION_WORDS.search(text.lower()) else []
+        # and they cost ~700 prompt tokens. Only offer tools when the request sounds like an action;
+        # a question about an action ("how do you open apps?") is conversation.
+        command_like = _ACTION_WORDS.search(text.lower()) and not _is_conversation(text, normalize(text))
+        tools = llm_tools() if command_like else []
         if tools and not self.cfg["llm"].get("use_tools", False):
             # With the tool list the 3B model never answered within 35 s on this laptop. An action the
             # command engine couldn't read is usually a mishearing: ask again instead of a long silence.
@@ -1385,10 +1445,14 @@ class Jarvis:
         # the tool list adds ~700 prompt tokens, which take this CPU another ~15 s to read
         first_wait = float(c.get("first_reply_seconds", 20)) + (25 if cold else 0) + (15 if tools else 0)
         filler = None if cold else asyncio.get_running_loop().call_later(
-            float(c.get("filler_after_seconds", 4)), lambda: not spoken and self._queue_speech("Just a moment, sir."))
+            float(c.get("filler_after_seconds", 4)),
+            lambda: not spoken and self._queue_speech(f"Just a moment, {self.cfg['address_as']}.", filler=True))
+        max_tokens = int(c.get("max_reply_tokens", 320))  # room for a proper answer or a bit of advice
+        max_sentences = int(c.get("max_spoken_sentences", 5))
         try:
             for attempt in range(2):
-                async for kind, data in _deadline(self.llm.chat(list(self.history), tools), first_wait,
+                async for kind, data in _deadline(self.llm.chat(list(self.history), tools, max_tokens=max_tokens),
+                                                  first_wait,
                                                   float(c.get("gap_seconds", 15))):
                     filler and filler.cancel()
                     if kind == "tool":
@@ -1400,9 +1464,14 @@ class Jarvis:
                         m = re.search(r"(.+?[.!?])(\s+|$)(?=\S)", buf, re.S)
                         if not m:
                             break
-                        sentence, buf = m.group(1).strip(), buf[m.end():]
-                        spoken.append(sentence)
-                        self._queue_speech(sentence)
+                        sentence, buf = _tidy_spoken(m.group(1)), buf[m.end():]
+                        if sentence and not (spoken and _OFFER.match(sentence)):
+                            spoken.append(sentence)
+                            self._queue_speech(sentence)
+                    if len(spoken) >= max_sentences:  # a spoken answer, not a lecture
+                        log.info("reply cut at %d sentences", max_sentences)
+                        buf = ""
+                        break
                 if spoken or buf.strip() or tool_results or not tools:
                     break
                 log.info("empty LLM reply with tools; retrying without")
@@ -1424,14 +1493,16 @@ class Jarvis:
             return
         finally:
             filler and filler.cancel()
-        if buf.strip():
-            spoken.append(buf.strip())
-            self._queue_speech(buf.strip())
+        rest = _tidy_spoken(buf)
+        if rest and not (spoken and _OFFER.match(rest)):
+            spoken.append(rest)
+            self._queue_speech(rest)
         if tool_results:
             await self._deliver(tool_results)
             self.history.append({"role": "assistant", "content": " ".join(r.say for r in tool_results)})
             return
         reply = " ".join(spoken)
+        log.info("jarvis: %r", reply[:500])
         self.history.append({"role": "assistant", "content": reply})
         await self._wait_speech()
         # Off by default: in an open office the follow-up window mostly captures other people talking
@@ -1441,8 +1512,10 @@ class Jarvis:
             self._go_idle()
 
     # ------------------------------------------------------------------ speech
-    def _queue_speech(self, sentence: str) -> None:
+    def _queue_speech(self, sentence: str, filler: bool = False) -> None:
         self.ui.send({"type": "reply", "text": sentence, "append": True})
+        if not filler:  # "One moment." isn't worth repeating when you say "What?"
+            self._said.append(sentence)
         if self._remote_said is not None:
             self._remote_said.append(sentence)
         self._speech_q.put_nowait(sentence)

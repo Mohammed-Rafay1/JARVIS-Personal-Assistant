@@ -56,6 +56,9 @@ llm:
   keep_alive: 8h             # unloads from RAM (~2.3 GB) after this much idle time; reloading costs ~25 s on the next question
   first_reply_seconds: 20    # give up (and say so) if the answer hasn't started by then; +25 s when the model is still loading
   filler_after_seconds: 4    # say "Just a moment, sir." if the answer is slower than this
+  temperature: 0.6           # conversation liveliness: lower = more predictable, higher = chattier
+  max_reply_tokens: 320      # longest answer the model may write
+  max_spoken_sentences: 5    # Jarvis stops after this many sentences: a spoken answer, not a lecture
 
 music:
   default_service: youtube   # used for "play X" with no service named: youtube | spotify

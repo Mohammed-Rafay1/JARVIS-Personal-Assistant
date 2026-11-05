@@ -173,6 +173,7 @@ Set `claude_code.background: false` to open a visible terminal instead (where yo
 | WhatsApp | "WhatsApp Ali that I'm running late", then "send it" or "no" |
 | Claude Code | "What are my projects?", "Status of Solvix", "Ask Claude Code in Solvix to fix the login bug", "Is Claude Code done?" |
 | Laptop | "Lock the screen", "Put the laptop to sleep", "What time is it?" |
+| Chat & advice | "I've got a presentation tomorrow and I'm nervous, any advice?", "How do you open apps without hands?", then just keep talking: it remembers the last few exchanges. "What?" or "Say that again" repeats its last answer. |
 | Other | "What's 18% of 4,500?", "Tell me a joke"; after an answer, "search it" looks the question up on the web |
 | Chains | "Open Chrome and play lofi on YouTube" |
 | Corrections | "No, open Spotify": the new command replaces whatever Jarvis was asking |
