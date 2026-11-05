@@ -12,8 +12,10 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 .\.venv\Scripts\python.exe -m pip install --upgrade pip -q
 .\.venv\Scripts\python.exe -m pip install -q -r backend\requirements.txt
 
-Write-Host "`n[2/5] Overlay (Electron)" -ForegroundColor Cyan
+Write-Host "`n[2/5] Overlay (Electron) and WhatsApp bridge" -ForegroundColor Cyan
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "Node.js is required (winget install OpenJS.NodeJS.LTS), then open a new terminal" }
 Push-Location ui; npm install --no-audit --no-fund; Pop-Location
+Push-Location whatsapp-bridge; npm install --no-audit --no-fund; Pop-Location
 
 Write-Host "`n[3/5] Offline models (wake word, speech, voices)" -ForegroundColor Cyan
 .\.venv\Scripts\python.exe scripts\download_models.py
