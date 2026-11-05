@@ -52,9 +52,28 @@
     </svg>
   </div>
 
-  <div id="orb-wrap" class="interactive" title="Click to talk · right-click to mute">
+  <div id="orb-wrap" class="interactive" title="Click to talk · drag to move · right-click to mute">
+    <!-- docked: a HUD core around the orb (rings are drawn by renderer.js) -->
+    <div id="dock-hud" aria-hidden="true">
+      <div class="glow"></div>
+      <div class="glass"></div>
+      <div class="sweep"></div>
+      <svg class="hr ticks" viewBox="0 0 200 200"></svg>
+      <svg class="hr dash" viewBox="0 0 200 200"><circle cx="100" cy="100" r="83" pathLength="360"/></svg>
+      <svg class="hr arcs" viewBox="0 0 200 200">
+        <circle cx="100" cy="100" r="74" pathLength="360" stroke-dasharray="64 116"/>
+      </svg>
+      <svg class="hr brackets" viewBox="0 0 200 200">
+        <path d="M100 1v9M100 190v9M1 100h9M190 100h9"/>
+        <path d="M30 30l7 7M170 30l-7 7M30 170l7-7M170 170l-7-7"/>
+      </svg>
+    </div>
     <canvas id="orb"></canvas>
     <div id="mute-badge">MIC OFF</div>
+  </div>
+  <div id="dock-tag" aria-hidden="true">
+    <div class="tag-name">J.A.R.V.I.S</div>
+    <div class="tag-state"><i></i><span id="tag-state">Starting up</span></div>
   </div>
 
   <section id="center">

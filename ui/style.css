@@ -36,11 +36,80 @@ body.full #topbar, body.full #controls, body.full #telemetry, body.full #side { 
 body.mini #pill { display: flex; }
 
 /* ---------------- orb: one canvas, placed per mode ---------------- */
-#orb-wrap { position: fixed; border-radius: 50%; cursor: pointer; z-index: 5; }
+/* --ox/--oy: where the orb sits inside the corner window (set by renderer.js; you can drag it anywhere) */
+#orb-wrap { position: fixed; border-radius: 50%; cursor: pointer; z-index: 5; touch-action: none; }
 #orb { width: 100%; height: 100%; display: block; }
-body.dock #orb-wrap { right: 10px; bottom: 10px; width: 76px; height: 76px; transition: transform 200ms ease; }
-body.dock #orb-wrap:hover { transform: scale(1.12); }
-body.mini #orb-wrap { right: 340px; bottom: 18px; width: 80px; height: 80px; }
+body.dock #orb-wrap { left: var(--ox, 322px); top: var(--oy, 522px); width: 108px; height: 108px; transition: transform 220ms cubic-bezier(.2, .8, .3, 1); }
+body.dock #orb-wrap:hover, body.dragging #orb-wrap { transform: scale(1.06); }
+body.dock #orb { position: absolute; inset: 17%; width: 66%; height: 66%; border-radius: 50%; }
+body.dragging, body.dragging * { cursor: grabbing !important; }
+body.settling #orb-wrap { transition: transform 220ms ease, left 180ms cubic-bezier(.2, .8, .3, 1), top 180ms cubic-bezier(.2, .8, .3, 1); }
+body.mini #orb-wrap { left: 18px; top: calc(var(--py, 528px) + 8px); width: 80px; height: 80px; }
+
+/* ---------------- docked HUD core: dark glass, rotating rings, radar sweep ---------------- */
+#dock-hud { display: none; position: absolute; inset: 0; pointer-events: none; color: var(--accent); transition: opacity 300ms; }
+body.dock #dock-hud { display: block; }
+#dock-hud > * { position: absolute; inset: 0; border-radius: 50%; }
+#dock-hud .glow {
+  inset: -12%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 34%, transparent) 38%, transparent 70%);
+  animation: breathe 3.6s ease-in-out infinite;
+}
+#dock-hud .glass {
+  inset: 3%;
+  background: radial-gradient(circle at 50% 40%, rgba(12, 28, 52, .94), rgba(2, 7, 16, .95) 72%);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent),
+    inset 0 0 22px color-mix(in srgb, var(--accent) 28%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 8px 22px rgba(0, 0, 0, .55);
+}
+#dock-hud .sweep {
+  inset: 12%; opacity: .6;
+  background: conic-gradient(from 0deg, transparent 0 72%, color-mix(in srgb, var(--accent) 75%, transparent) 100%);
+  -webkit-mask: radial-gradient(circle, transparent 0 63%, #000 64% 100%);
+  animation: spin 4.5s linear infinite;
+}
+#dock-hud .hr { width: 100%; height: 100%; overflow: visible; stroke: currentColor; fill: none; }
+#dock-hud .ticks { opacity: .8; animation: spin 90s linear infinite; }
+#dock-hud .ticks line { stroke-width: 1.3; }
+#dock-hud .ticks line.major { stroke-width: 2.4; }
+#dock-hud .dash { opacity: .55; animation: spin 40s linear infinite reverse; }
+#dock-hud .dash circle { stroke-width: 2.6; stroke-dasharray: 2 3; }
+#dock-hud .arcs { animation: spin 7s linear infinite; filter: drop-shadow(0 0 3px var(--accent)); }
+#dock-hud .arcs circle { stroke-width: 4.5; }
+#dock-hud .brackets { opacity: .9; }
+#dock-hud .brackets path { stroke-width: 3; stroke-linecap: square; }
+body.dock #orb-wrap:hover #dock-hud .arcs { animation-duration: 2.6s; }
+body.booting #dock-hud .arcs { animation-duration: 1.4s; }
+body.state-listening #dock-hud .arcs { animation-duration: 2.8s; }
+body.state-thinking #dock-hud .arcs { animation-duration: 1s; }
+body.state-thinking #dock-hud .sweep { animation-duration: 1.3s; opacity: .85; }
+body.state-acting #dock-hud .arcs { animation-duration: 1.6s; }
+body.state-speaking #dock-hud .arcs { animation-duration: 2.2s; }
+body.state-speaking #dock-hud .glow { animation-duration: 1.1s; }
+body.state-offline #dock-hud, body.muted #dock-hud { opacity: .6; }
+body.state-offline #dock-hud .sweep, body.muted #dock-hud .sweep { display: none; }
+body.muted #dock-hud .arcs { animation-play-state: paused; }
+
+/* a HUD label beside the docked orb: on hover, while starting, and when something's wrong */
+#dock-tag {
+  display: none; position: fixed; z-index: 5; pointer-events: none;
+  top: calc(var(--oy, 522px) + 54px); right: 130px; transform: translateY(-50%) translateX(6px);
+  padding: 8px 14px 8px 12px; min-width: 128px;
+  background: linear-gradient(90deg, rgba(4, 12, 24, .9), rgba(4, 12, 24, .78));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-right: 2px solid var(--accent);
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px));
+  opacity: 0; transition: opacity 220ms ease, transform 220ms ease;
+}
+#dock-tag.right { border-right: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-left: 2px solid var(--accent); transform: translateY(-50%) translateX(-6px); }
+body.dock #dock-tag { display: block; }
+body.dock #orb-wrap:hover + #dock-tag, body.dragging #dock-tag, body.booting #dock-tag, body.greet #dock-tag,
+body.muted #dock-tag, body.state-offline #dock-tag, body.state-error #dock-tag { opacity: 1; transform: translateY(-50%); }
+.tag-name { font: 700 12px/1 var(--display); letter-spacing: .34em; color: #E6F6FF; text-shadow: 0 0 10px color-mix(in srgb, var(--accent) 70%, transparent); white-space: nowrap; }
+.tag-state { display: flex; align-items: center; gap: 7px; margin-top: 6px; font: 600 9.5px/1 var(--mono); letter-spacing: .22em; text-transform: uppercase; color: var(--accent); white-space: nowrap; }
+.tag-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 body.full #orb-wrap { left: var(--cx); top: var(--cy); width: var(--orb); height: var(--orb); transform: translate(-50%, -50%); }
 #mute-badge {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -238,7 +307,7 @@ body.muted #btn-mic .slash { display: inline; }
 
 /* ---------------- mini call pill (corner window) ---------------- */
 #pill {
-  position: fixed; right: 12px; bottom: 12px; width: 420px; height: 96px; z-index: 4;
+  position: fixed; left: 10px; top: var(--py, 528px); width: 420px; height: 96px; z-index: 4; cursor: grab; touch-action: none;
   align-items: center; gap: 8px; padding: 0 14px 0 104px;
   background: var(--panel-solid); border: 1px solid var(--edge); border-radius: 48px;
   box-shadow: 0 14px 40px rgba(0,0,0,.5), 0 0 22px color-mix(in srgb, var(--accent) 22%, transparent);
@@ -249,7 +318,10 @@ body.muted #btn-mic .slash { display: inline; }
 #pill-line { font: 14px var(--display); color: #E2E8F0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #pill .icon-btn { border-radius: 50%; }
 
-#toasts { position: fixed; right: 12px; bottom: 100px; width: 380px; display: flex; flex-direction: column; gap: 8px; z-index: 6; }
+/* new-email toasts open beside the orb, on the side with room (placed by renderer.js) */
+#toasts { position: fixed; right: 12px; bottom: 100px; width: 380px; display: flex; flex-direction: column; gap: 8px; z-index: 6; overflow: hidden; }
+#toasts.up { flex-direction: column-reverse; }   /* above the orb: the newest sits closest to it */
+body.dragging #toasts { opacity: .35; transition: opacity 150ms; }
 
 #log::-webkit-scrollbar, .body::-webkit-scrollbar { width: 5px; }
 #log::-webkit-scrollbar-thumb, .body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); }
@@ -258,6 +330,7 @@ body.muted #btn-mic .slash { display: inline; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 @keyframes blink { 50% { opacity: 0; } }
+@keyframes breathe { 0%, 100% { opacity: .55; transform: scale(.96); } 50% { opacity: 1; transform: scale(1.04); } }
 
 /* narrow screens: hide the side panels, centre everything */
 @media (max-width: 1100px) {

@@ -6,7 +6,7 @@ import { Orb } from './orb.js';
 
 const qs = new URLSearchParams(location.search);  // dev preview in a browser: ?port=&token=
 const host = window.host || { port: qs.get('port') || '8765', token: qs.get('token') || '', hotkey: 'Ctrl+Alt+J',
-  setInteractive() {}, focus() {}, blur() {}, reportMuted() {}, setMode() {}, on() {} };
+  spot: null, drag() {}, setInteractive() {}, focus() {}, blur() {}, reportMuted() {}, setMode() {}, on() {} };
 const $ = (id) => document.getElementById(id);
 const body = document.body;
 if (!window.host) body.style.background = 'radial-gradient(circle at 30% 20%, #2b3445, #0d1117 70%)'; // fake desktop
@@ -15,7 +15,7 @@ new ResizeObserver(() => orb.resize()).observe($('orb'));
 
 const PALETTE = {
   booting:   ['#1e293b', '#475569', 0.3, 0.6],
-  idle:      ['#0B2A6B', '#2563EB', 0.0, 0.8],
+  idle:      ['#0C4A6E', '#38BDF8', 0.05, 1.0],
   listening: ['#06B6D4', '#3B82F6', 0.0, 1.0],
   thinking:  ['#7C3AED', '#D946EF', 1.0, 1.0],
   acting:    ['#0D9488', '#2DD4BF', 0.6, 1.0],
@@ -62,6 +62,7 @@ function setMode(next) {
     body.classList.add(next);
     mode = next;
     interactive = null;
+    placeAround();
     orb.fps = next === 'dock' && state === 'idle' ? 20 : next === 'mini' ? 30 : 60;
     if (next === 'full') setTimeout(() => $('input').focus(), 80);
     setTimeout(() => { orb.resize(); body.classList.remove('switching'); }, 70);
@@ -99,6 +100,7 @@ function setState(value, extra = {}) {
   if (value === 'acting' && extra.icon && CHIP[extra.icon]) label = `Working · ${CHIP[extra.icon]}`;
   $('status-text').textContent = label;
   $('pill-status').textContent = label;
+  $('tag-state').textContent = key === 'idle' ? 'Online' : key === 'muted' ? 'Mic off' : label;
   $('t-status').textContent = value === 'offline' ? 'OFFLINE' : 'ONLINE';
   orb.fps = mode === 'dock' && value === 'idle' ? 20 : 60;
 }
@@ -340,7 +342,14 @@ function handle(m) {
   switch (m.type) {
     case 'state': setState(m.value, m); break;
     case 'status':
-      if (m.ready) { body.classList.remove('booting'); if (state === 'booting') setState('idle'); }
+      if (m.ready) {
+        if (body.classList.contains('booting')) {   // "J.A.R.V.I.S · Online" shows for a moment
+          body.classList.add('greet');
+          setTimeout(() => body.classList.remove('greet'), 4500);
+        }
+        body.classList.remove('booting');
+        if (state === 'booting') setState('idle');
+      }
       else if (m.error) setState('error');
       if (typeof m.muted === 'boolean') setMuted(m.muted, false);
       break;
@@ -393,7 +402,90 @@ $('bar').addEventListener('submit', (e) => {
   send({ type: 'text', text });
 });
 
+// ---------------------------------------------------------------- drag the orb (or the mini pill) anywhere
+// The main process moves the window with the cursor; here we only tell a drag from a click and keep
+// the pill and toasts beside the orb, on the side of the window that has room.
+const WIN_W = 440, WIN_H = 640, ORB = 108;   // ORB matches position.js and the dock size in style.css
+const clampTo = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+let spot = host.spot || { x: WIN_W - 10 - ORB, y: WIN_H - 10 - ORB };   // the orb inside this window
+let press = null, dragging = false, draggedAt = 0;
+
+function placeAround() {
+  const root = document.documentElement.style;
+  root.setProperty('--ox', `${spot.x}px`);
+  root.setProperty('--oy', `${spot.y}px`);
+  const pillY = clampTo(spot.y + ORB / 2 - 48, 6, WIN_H - 96 - 12);
+  root.setProperty('--py', `${pillY}px`);
+  // toasts go on the side of the orb (or pill) with more room, never off the window
+  const box = mode === 'mini' ? { x: 10, y: pillY, w: 420, h: 96 } : { x: spot.x, y: spot.y, w: ORB, h: ORB };
+  const t = $('toasts').style;
+  t.left = t.right = t.top = t.bottom = '';
+  if (box.x + box.w / 2 > WIN_W / 2) t.right = `${clampTo(WIN_W - box.x - box.w, 8, WIN_W - 388)}px`;
+  else t.left = `${clampTo(box.x, 8, WIN_W - 388)}px`;
+  const up = box.y + box.h / 2 > WIN_H / 2;
+  if (up) { t.bottom = `${WIN_H - box.y + 10}px`; t.maxHeight = `${box.y - 16}px`; }
+  else { t.top = `${box.y + box.h + 10}px`; t.maxHeight = `${WIN_H - box.y - box.h - 16}px`; }
+  $('toasts').classList.toggle('up', up);
+  // the HUD label sits beside the orb, toward the middle of the screen
+  const tag = $('dock-tag'), toRight = spot.x + ORB / 2 <= WIN_W / 2;
+  tag.classList.toggle('right', toRight);
+  tag.style.left = toRight ? `${spot.x + ORB + 10}px` : '';
+  tag.style.right = toRight ? '' : `${WIN_W - spot.x + 10}px`;
+}
+
+// tick marks around the docked orb: 72 fine, every 30 degrees a long one
+{
+  const svg = document.querySelector('#dock-hud .ticks'), NS = 'http://www.w3.org/2000/svg';
+  for (let i = 0; i < 72; i++) {
+    const a = (i * 5 * Math.PI) / 180, major = i % 6 === 0, r0 = major ? 86 : 91, r1 = 96;
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', 100 + Math.cos(a) * r0); line.setAttribute('y1', 100 + Math.sin(a) * r0);
+    line.setAttribute('x2', 100 + Math.cos(a) * r1); line.setAttribute('y2', 100 + Math.sin(a) * r1);
+    if (major) line.setAttribute('class', 'major');
+    svg.append(line);
+  }
+}
+
+function onPress(e) {
+  if (e.button !== 0 || mode === 'full' || e.target.closest('button')) return;   // pill buttons stay buttons
+  press = { x: e.screenX, y: e.screenY, grab: { x: e.clientX - spot.x, y: e.clientY - spot.y } };
+  e.currentTarget.setPointerCapture(e.pointerId);
+}
+function onMove(e) {
+  if (!press || dragging || Math.hypot(e.screenX - press.x, e.screenY - press.y) < 5) return;
+  dragging = true;   // past a few pixels it's a drag, not a click
+  body.classList.add('dragging');
+  host.drag('start', press.grab);
+}
+function onRelease() {
+  if (!press) return;
+  press = null;
+  if (!dragging) return;
+  dragging = false;
+  draggedAt = Date.now();
+  body.classList.remove('dragging');
+  host.drag('end');
+  interactive = null;   // re-check what's under the cursor on the next move
+}
+for (const node of [$('orb-wrap'), $('pill')]) {
+  node.addEventListener('pointerdown', onPress);
+  node.addEventListener('pointermove', onMove);
+  node.addEventListener('pointerup', onRelease);
+  node.addEventListener('pointercancel', onRelease);
+  node.addEventListener('lostpointercapture', onRelease);
+}
+host.on('spot', (s) => {
+  spot = { x: s.x, y: s.y };
+  if (s.smooth) {   // a snap to the edge glides instead of jumping
+    body.classList.add('settling');
+    clearTimeout(placeAround.timer);
+    placeAround.timer = setTimeout(() => body.classList.remove('settling'), 220);
+  }
+  placeAround();
+});
+
 $('orb-wrap').addEventListener('click', () => {
+  if (Date.now() - draggedAt < 400) return;                  // that was the end of a drag
   if (!inCall) { send({ type: 'wake' }); return; }           // start a call
   if (mode === 'mini') { setMode('full'); return; }
   send({ type: state === 'speaking' || state === 'thinking' ? 'stop' : 'wake' });  // cut in / listen now
@@ -414,12 +506,13 @@ host.on('quit', () => send({ type: 'quit' }));
 // click-through in the corner modes, except over the orb / pill / toasts
 let interactive = null;
 document.addEventListener('mousemove', (e) => {
-  if (mode === 'full') return;
+  if (mode === 'full' || dragging) return;
   const on = !!(e.target.closest && e.target.closest('.interactive'));
   if (on !== interactive) { interactive = on; host.setInteractive(on); }
 });
-document.addEventListener('mouseleave', () => { if (mode !== 'full' && interactive) { interactive = false; host.setInteractive(false); } });
+document.addEventListener('mouseleave', () => { if (mode !== 'full' && !dragging && interactive) { interactive = false; host.setInteractive(false); } });
 
 $('hk').textContent = host.hotkey;
+placeAround();
 setState('booting');
 connect();

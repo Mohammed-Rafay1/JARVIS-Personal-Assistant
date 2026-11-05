@@ -66,7 +66,7 @@ This:
 
 ## 4. Start it
 
-Double-click **`start_jarvis.bat`**. Jarvis takes about 20 seconds to warm up, greets you, then docks as a small orb in the bottom-right corner.
+Double-click **`start_jarvis.bat`**. Jarvis takes about 20 seconds to warm up, greets you, then docks as a glowing HUD orb in the bottom-right corner. Drag it anywhere, on any monitor; it remembers the spot.
 
 | To | Do this |
 |---|---|
@@ -75,6 +75,7 @@ Double-click **`start_jarvis.bat`**. Jarvis takes about 20 seconds to warm up, g
 | Stop it talking, or cancel | Say "stop" or "never mind", press **Esc**, or click the orb |
 | End a conversation | Say "bye", or press ✕ |
 | Mute the mic | Right-click the orb, or use the tray icon |
+| Move the orb | Drag it (it snaps neatly to screen edges). Tray icon → **Put the orb back in the corner** to reset. |
 | Settings, logs, quit | The tray icon (bottom-right, near the clock) |
 
 Start Jarvis automatically when you sign in to Windows:
@@ -225,7 +226,10 @@ Run the tests (they don't need a mic or any accounts):
 
 ```powershell
 .venv\Scripts\python -m pytest tests -q
+node --test ui\position.test.js
 ```
+
+The overlay writes its own problems (and where the orb was moved) to `data\logs\overlay.log`.
 
 Work on your own branch and open a pull request, rather than pushing to `main`.
 

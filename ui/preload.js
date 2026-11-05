@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('host', {
   port: arg('port', '8765'),
   token: arg('token', ''),
   hotkey: arg('hotkey', 'Control+Alt+J').replace('Control', 'Ctrl'),
+  spot: (() => { const [x, y] = arg('spot', '').split(',').map(Number); return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null; })(),
+  drag: (phase, grab) => ipcRenderer.send('drag', { phase, grab }),
   setInteractive: (on) => ipcRenderer.send('interactive', !!on),
   focus: () => ipcRenderer.send('focus'),
   blur: () => ipcRenderer.send('blur'),
@@ -17,6 +19,6 @@ contextBridge.exposeInMainWorld('host', {
   setMode: (m) => ipcRenderer.send('mode', m),
   quit: () => ipcRenderer.send('quit'),
   on: (channel, cb) => {
-    if (['hotkey', 'mute', 'quit'].includes(channel)) ipcRenderer.on(channel, (_e, v) => cb(v));
+    if (['hotkey', 'mute', 'quit', 'spot'].includes(channel)) ipcRenderer.on(channel, (_e, v) => cb(v));
   },
 });
