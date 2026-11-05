@@ -45,7 +45,7 @@ CAPABILITIES = [
                        "Pause · Next song · Volume 40 · Mute"]),
     ("Build & code (via Claude Code)", ["What's the status of my projects?", "How is the Solvix project going?",
                                         "Ask Claude Code in Solvix to build a login page",
-                                        "Ask Claude Code in Jarvis to fix the volume bug"]),
+                                        "Is Claude Code done? · Stop Claude Code"]),
     ("WhatsApp", ["WhatsApp Ali that I'm running late", "Send a WhatsApp message to Sara", "Then: “send it” or “no”"]),
     ("Quick answers", ["What's 18% of 4,500?", "What time is it?", "Tell me something about space"]),
     ("During a call", ["Just start talking to interrupt me, even while I'm thinking",
@@ -88,6 +88,7 @@ class Jarvis:
         self._pending: dict | None = None
         self._pending_at = 0.0
         self._last_question = ""      # the last question the language model answered ("search it" looks it up)
+        self.remote = None            # the WhatsApp link, once started (reports finished Claude Code tasks)
         self.history: deque[dict] = deque(maxlen=8)  # a shorter prompt answers faster on this CPU
         self._last_chat = 0.0
         self.follow_up = False
@@ -229,7 +230,8 @@ class Jarvis:
         if self.cfg.get("whatsapp_remote", {}).get("enabled"):
             from .services.whatsapp_remote import WhatsAppRemote
 
-            asyncio.create_task(WhatsAppRemote(self.cfg, self).run())
+            self.remote = WhatsAppRemote(self.cfg, self)
+            asyncio.create_task(self.remote.run())
             health["whatsapp"] = "remote on"
         self.mode = "wake"
         self._set_state("idle")
@@ -1248,16 +1250,64 @@ class Jarvis:
         await self.say(f"Sent to {p['chat']} on WhatsApp.", then_idle=True)
 
     async def _launch_claude(self, p: dict, task: str | None = None) -> None:
-        """Hand the confirmed task to Claude Code in a visible terminal."""
-        from .tools.claude_code import launch
+        """Hand the confirmed task to Claude Code: in the background (it reports back when done), or in a
+        visible terminal when claude_code.background is false."""
+        from .tools import claude_code as cc
 
         self.pending = None
-        if self.in_call:
-            self.ui.send({"type": "call", "value": "mini"})  # the terminal should be visible
         self.ui.send({"type": "card", "kind": "clear"})
         self._set_state("acting", icon="code")
-        result = await asyncio.to_thread(launch, p["cwd"], p["name"], task or p["task"], p.get("session", ""))
-        await self._deliver([result])
+        task = task or p["task"]
+        spoken = re.sub(r"[-_]+", " ", p["name"])
+        if not await asyncio.to_thread(cc.signed_in):
+            await self._deliver([Result(cc.NOT_SIGNED_IN, ok=False, icon="code")])
+            return
+        if not cc.background_enabled():
+            if self.in_call:
+                self.ui.send({"type": "call", "value": "mini"})  # the terminal should be visible
+            await self._deliver([await asyncio.to_thread(cc.launch, p["cwd"], p["name"], task, p.get("session", ""))])
+            return
+        if cc.running(p["cwd"]):  # two runs editing the same files would trip over each other
+            await self._deliver([Result(f"Claude Code is still working on the last task in {spoken}. I'll tell you "
+                                        "when it's done; send this one after that.", ok=False, icon="code")])
+            return
+        try:
+            await cc.start_background(p["cwd"], p["name"], task, p.get("session", ""),
+                                      from_phone=self._remote_said is not None, on_done=self._claude_done)
+        except Exception as e:
+            log.exception("claude code task didn't start")
+            await self._deliver([Result(f"Claude Code didn't start: {str(e)[:80]}.", ok=False, icon="code")])
+            return
+        where = "on WhatsApp" if self._remote_said is not None else "here"
+        await self._deliver([Result(f"Sent. Claude Code is working on it in {spoken} in the background. I'll tell "
+                                    f"you {where} when it's done. Say stop Claude Code to cancel it.", icon="code")])
+
+    async def _claude_done(self, t) -> None:
+        """A background task ended: tell you, on WhatsApp if you sent it from your phone (or the laptop is
+        locked, so you're away), out loud otherwise."""
+        from .tools import claude_code as cc
+        from .tools.whatsapp import screen_locked
+
+        if t.status == "stopped":
+            return  # you stopped it, and were told so then
+        spoken = cc.report(t, spoken=True)
+        card = {"kind": "project", "name": t.name, "title": "Task finished" if t.status == "done" else "Task ended",
+                "ago": "just now", "summary": spoken, "last_prompt": t.task,
+                "recent": [Path(f).name for f in t.files[:6]]}
+        self.ui.send({"type": "card", **card})
+        away = t.from_phone or await asyncio.to_thread(screen_locked)
+        remote = getattr(self, "remote", None)
+        if away and remote is not None and remote.linked:
+            remote.notify(cc.report(t, spoken=False))
+            return
+        if self._remote_said is not None:  # a phone command is running: don't talk over it
+            return
+        if self.in_call or self.state != "idle":
+            self._queue_speech(spoken)
+            return
+        self.speak_aloud = True
+        self.player.play(earcons.NOTIFY)
+        await self.say(spoken, then_idle=True)
 
     async def _send_email(self, p: dict, edited: dict | None = None) -> None:
         """The ONLY code path that sends email. Requires a pending draft the user confirmed."""

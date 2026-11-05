@@ -387,8 +387,31 @@ def _song_target(q: str) -> str:
     return re.sub(r"^(?:any|some|a|an|the|me)\s+", "", q).strip()
 
 
+_CC = r"(?:claude(?: code)?|the (?:claude(?: code)? )?task|the (?:coding )?task|my task|that task|it)"
+
+
+def _claude_task_control(t: str) -> Intent | None:
+    """The task Jarvis handed Claude Code: "is Claude Code done?", "what is Claude Code doing", "stop Claude Code"."""
+    if re.match(r"^(?:stop|cancel|kill|abort|end|halt)(?: the)? claude(?: code)?(?: task)?(?: now)?$"
+                r"|^(?:stop|cancel|abort) (?:the|that|my) (?:claude(?: code)? )?task$", t):
+        return Intent("claude_task_stop")
+    if re.search(r"\bclaude\b", t) and re.search(
+            r"^(?:is|has) " + _CC + r" (?:done|finished|complete|completed|ready|still (?:working|running|going))"
+            r"|^(?:did|has) " + _CC + r" (?:finish|finished|complete|completed|done)"
+            r"|^what(?:'s| is) " + _CC + r" (?:doing|working on|up to)"
+            r"|^how(?:'s| is) (?:the |my )?claude(?: code)? task(?: going| doing)?"
+            r"|^(?:claude(?: code)? )?task (?:status|progress|update)$|^status of (?:the )?claude(?: code)? task", t):
+        return Intent("claude_task_status")
+    if re.match(r"^(?:is the task (?:done|finished)|is it done yet|is my task (?:done|finished))$", t):
+        return Intent("claude_task_status")
+    return None
+
+
 def _claude(t: str) -> Intent | None:
     """Claude Code projects: list them, a project's status, or a task for one."""
+    hit = _claude_task_control(t)
+    if hit:
+        return hit
     # a prompt for Claude Code. Without a project named, Jarvis asks which project (and which chat) first.
     m = re.match(r"^(?:ask|tell|get|have) claude(?: code)? (?:in|for|on|with) (?:the |my )?(?P<p>[\w .'-]+?)"
                  r"(?: project)? to (?P<task>.+)$", t)

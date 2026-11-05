@@ -68,6 +68,16 @@ claude_code:
   allow_tasks: true          # prompts for Claude Code: Jarvis asks which project and which chat, reads it back, sends on "send it" (false = read-only)
   new_project_dir: "~/Desktop"   # where "new project" creates its folder
   ai_summary: false          # true = local-AI summary (nicer wording, but over a minute on this laptop)
+  # After "send it", Claude Code works in the background and Jarvis tells you when it's done: out loud, or on
+  # WhatsApp if you sent the task from your phone (or the laptop is locked). false = open a terminal instead.
+  background: true
+  # It may create and edit files inside that project. Anything else it would normally ask about first
+  # (other commands, the web) is refused and listed in the report, except these commands:
+  permission_mode: acceptEdits
+  allowed_tools: ["Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(npm test:*)",
+                  "Bash(npm run test:*)", "Bash(npm run lint:*)", "Bash(npm run build:*)", "Bash(pytest:*)",
+                  "Bash(python -m pytest:*)"]
+  max_minutes: 30            # a task still running after this is stopped
 
 files:
   search_roots: ["~"]        # where file search looks

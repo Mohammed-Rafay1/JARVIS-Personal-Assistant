@@ -279,9 +279,270 @@ def prepare_task(cwd: str, name: str, task: str, session: str = "") -> Result:
                   pending={"kind": "claude_send", "cwd": cwd, "name": name, "task": task, "session": session})
 
 
+def _exe() -> str | None:
+    return str(CLAUDE_EXE) if CLAUDE_EXE.exists() else shutil.which("claude")
+
+
+def background_enabled() -> bool:
+    return bool(CTX.cfg.get("claude_code", {}).get("background", True))
+
+
+_signed_in_at = 0.0
+NOT_SIGNED_IN = ("Claude Code on this laptop isn't signed in, so I can't hand it work yet. At the laptop, open a "
+                 "terminal, run claude auth login, and sign in once in the browser. The desktop app's sign-in "
+                 "isn't shared with it.")
+
+
+def signed_in() -> bool:
+    """Whether the command-line Claude Code can work (the desktop app signs in separately: on 5 Nov the
+    command line wasn't, and every task would have stopped at "Not logged in")."""
+    global _signed_in_at
+    if time.monotonic() - _signed_in_at < 600:
+        return True
+    exe = _exe()
+    if not exe:
+        return False
+    try:
+        out = subprocess.run([exe, "auth", "status"], capture_output=True, text=True, timeout=20,
+                             creationflags=0x08000000).stdout
+        ok = bool(json.loads(out[out.index("{"):]).get("loggedIn"))
+    except Exception as e:
+        log.info("claude auth status unreadable (%s); trying anyway", e.__class__.__name__)
+        return True
+    if ok:
+        _signed_in_at = time.monotonic()
+    return ok
+
+
+# ---------------------------------------------------------------- tasks run in the background
+@dataclass
+class Task:
+    """One task handed to Claude Code, running without a window; Jarvis reports when it finishes."""
+    name: str
+    cwd: str
+    task: str
+    from_phone: bool = False
+    started: float = field(default_factory=time.time)
+    status: str = "running"          # running | done | failed | stopped | timed_out
+    result: str = ""                 # Claude Code's own closing message
+    files: list[str] = field(default_factory=list)    # files it created or edited
+    denied: list[str] = field(default_factory=list)   # commands it wanted to run but wasn't allowed to
+    session: str = ""
+    turns: int = 0
+    error: str = ""
+    proc: object = None
+    log_path: Path | None = None
+
+
+TASKS: list[Task] = []
+_EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
+def running(cwd: str = "") -> list[Task]:
+    return [t for t in TASKS if t.status == "running" and (not cwd or t.cwd.lower() == cwd.lower())]
+
+
+def background_args(exe: str, task: str, name: str, session: str, cfg: dict) -> list[str]:
+    """Claude Code without a window. It may edit files in the project (acceptEdits); anything it would normally
+    ask about first (running commands, the web) is refused instead of waiting for an answer nobody can give,
+    apart from the commands listed in claude_code.allowed_tools. The session is saved under the name
+    "Jarvis: <project>", so it can be opened and continued in Claude Code afterwards."""
+    args = [exe, "-p", task, "--output-format", "stream-json", "--verbose",
+            "--permission-mode", cfg.get("permission_mode", "acceptEdits"), "--permission-prompts", "none",
+            "-n", f"Jarvis: {name}"]
+    if session:
+        args += ["--resume", session, "--fork-session"]
+    if cfg.get("max_budget_usd"):
+        args += ["--max-budget-usd", str(cfg["max_budget_usd"])]
+    allowed = cfg.get("allowed_tools") or []
+    if allowed:  # last: the option takes every value after it
+        args += ["--allowedTools", ",".join(allowed)]
+    return args
+
+
+def take_event(t: Task, ev: dict) -> None:
+    """Fold one line of Claude Code's stream into the task: its session, the files it edits, its result."""
+    kind = ev.get("type")
+    if kind == "system" and ev.get("session_id"):
+        t.session = ev["session_id"]
+    elif kind == "assistant":
+        for b in (ev.get("message") or {}).get("content") or []:
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in _EDIT_TOOLS:
+                path = (b.get("input") or {}).get("file_path") or (b.get("input") or {}).get("notebook_path")
+                if path and path not in t.files:
+                    t.files.append(path)
+    elif kind == "result":
+        t.result = str(ev.get("result") or "")
+        t.turns = int(ev.get("num_turns") or 0)
+        t.session = ev.get("session_id") or t.session
+        if ev.get("is_error") or ev.get("subtype", "success") != "success":
+            t.status, t.error = "failed", t.result or str(ev.get("subtype", "error"))
+        for d in ev.get("permission_denials") or []:
+            inp = d.get("tool_input") or {}
+            what = inp.get("command") or inp.get("url") or inp.get("file_path") or d.get("tool_name", "")
+            if what and what not in t.denied:
+                t.denied.append(str(what)[:120])
+
+
+def _short_files(t: Task) -> list[str]:
+    out = []
+    for f in t.files:
+        try:
+            out.append(str(Path(f).resolve().relative_to(Path(t.cwd).resolve())))
+        except ValueError:
+            out.append(Path(f).name)
+    return out
+
+
+def _list(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + f" and {items[-1]}"
+
+
+def report(t: Task, spoken: bool = True) -> str:
+    """What happened, for the ear (short) or for WhatsApp (with Claude Code's own words and every file)."""
+    name = re.sub(r"[-_]+", " ", t.name)
+    mins = max(1, round((time.time() - t.started) / 60))
+    if t.status == "stopped":
+        return f"I stopped the Claude Code task in {name}."
+    if t.status == "timed_out":
+        head = f"The Claude Code task in {name} ran over {mins} minutes, so I stopped it."
+    elif t.status == "failed" and re.search(r"not logged in|/login|authenticat", t.error + t.result, re.I):
+        return NOT_SIGNED_IN
+    elif t.status == "failed":
+        head = f"Claude Code ran into a problem in {name}: {_first_sentence(_speakable(t.error or t.result)) or 'no details'}."
+    else:
+        head = f"Claude Code finished in {name} after {mins} minute{'s' if mins != 1 else ''}."
+    files = _short_files(t)
+    if files:
+        shown = files if not spoken else [Path(f).name for f in files[:3]]
+        more = f" and {len(files) - 3} more" if spoken and len(files) > 3 else ""
+        head += f" It changed {len(files)} file{'s' if len(files) != 1 else ''}: {_list(shown)}{more}."
+    elif t.status == "done":
+        head += " It didn't change any files."
+    if t.denied:
+        head += (f" It wanted to run {len(t.denied)} command{'s' if len(t.denied) != 1 else ''} I don't allow "
+                 f"without you, like {t.denied[0][:60]}; open the Jarvis: {t.name} session to approve "
+                 f"{'them' if len(t.denied) != 1 else 'it'}.")
+    said = _speakable(t.result)
+    if spoken:
+        sentences = re.split(r"(?<=[.!?])\s+", said)
+        return f"{head} {' '.join(sentences[:2])[:300]}".strip()
+    return f"{head}\n\n{t.result[:1800]}".strip()
+
+
+def progress(t: Task) -> str:
+    name = re.sub(r"[-_]+", " ", t.name)
+    mins = max(1, round((time.time() - t.started) / 60))
+    files = [Path(f).name for f in t.files]
+    so_far = f" So far it has changed {_list(files[-3:])}." if files else " It hasn't changed any files yet."
+    return f"Claude Code has been working in {name} for {mins} minute{'s' if mins != 1 else ''}.{so_far}"
+
+
+async def start_background(cwd: str, name: str, task: str, session: str = "", from_phone: bool = False,
+                           on_done=None) -> Task:
+    """Start the task and return at once; on_done(task) is awaited when it ends."""
+    from ..config import DATA
+
+    exe = _exe()
+    if not exe:
+        raise FileNotFoundError("Claude Code's command-line tool isn't installed")
+    cfg = CTX.cfg.get("claude_code", {})
+    t = Task(name=name, cwd=cwd, task=task, from_phone=from_phone)
+    logs = DATA / "claude_tasks"
+    logs.mkdir(parents=True, exist_ok=True)
+    t.log_path = logs / f"{time.strftime('%Y%m%d-%H%M%S')}-{re.sub(r'[^A-Za-z0-9]+', '-', name)}.jsonl"
+    t.proc = await asyncio.create_subprocess_exec(
+        *background_args(exe, task, name, session, cfg), cwd=cwd, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, creationflags=0x08000000,
+        limit=32 * 1024 * 1024)  # one stream line can hold a whole file Claude Code read
+    TASKS.append(t)
+    log.info("claude code task started in %s (from session %s, pid %s): %r", cwd, session or "new", t.proc.pid, task)
+    asyncio.create_task(_watch(t, float(cfg.get("max_minutes", 30)) * 60, on_done))
+    return t
+
+
+async def _watch(t: Task, limit: float, on_done) -> None:
+    errors: list[str] = []
+
+    async def read() -> None:
+        with open(t.log_path, "a", encoding="utf-8") as f:
+            async for raw in t.proc.stdout:
+                line = raw.decode("utf-8", "replace")
+                f.write(line)
+                try:
+                    take_event(t, json.loads(line))
+                except ValueError:
+                    continue
+
+    async def read_errors() -> None:
+        async for raw in t.proc.stderr:
+            errors.append(raw.decode("utf-8", "replace").strip())
+
+    err_task = asyncio.create_task(read_errors())
+    try:
+        await asyncio.wait_for(read(), timeout=limit)
+        await t.proc.wait()
+    except asyncio.TimeoutError:
+        t.status = "timed_out"
+        _kill(t)
+    except Exception as e:
+        log.exception("claude code task watch failed")
+        t.status, t.error = "failed", str(e)
+    finally:
+        err_task.cancel()
+    if t.status == "running":
+        code = t.proc.returncode
+        if code == 0 or t.result:
+            t.status = "done"
+        else:
+            t.status, t.error = "failed", t.error or " ".join(errors[-3:])[:300] or f"exit code {code}"
+    log.info("claude code task %s in %s: %d files, %d refused, session %s", t.status, t.cwd, len(t.files),
+             len(t.denied), t.session)
+    if on_done:
+        try:
+            await on_done(t)
+        except Exception:
+            log.exception("claude code report failed")
+
+
+def _kill(t: Task) -> None:
+    """End the task and anything it started (a test run, a build)."""
+    pid = getattr(t.proc, "pid", None)
+    if pid:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, creationflags=0x08000000)
+
+
+def stop(cwd: str = "") -> list[Task]:
+    stopped = running(cwd)
+    for t in stopped:
+        t.status = "stopped"
+        _kill(t)
+    return stopped
+
+
+@tool("How the Claude Code task Jarvis started is going (or how the last one ended)")
+async def claude_task_status() -> Result:
+    now = running()
+    if now:
+        return Result(" ".join(progress(t) for t in now), icon="code")
+    if TASKS:
+        return Result(report(TASKS[-1]), icon="code")
+    return Result("I haven't given Claude Code any tasks since I started.", icon="code")
+
+
+@tool("Stop the Claude Code task Jarvis started")
+async def claude_task_stop() -> Result:
+    stopped = await asyncio.to_thread(stop)
+    if not stopped:
+        return Result("Claude Code isn't working on anything for me right now.", icon="code")
+    names = _list([re.sub(r"[-_]+", " ", t.name) for t in stopped])
+    return Result(f"Stopped the Claude Code task in {names}. Changes it already made are still in the files.",
+                  icon="code")
+
+
 def launch(cwd: str, name: str, task: str, session: str = "") -> Result:
     """Open a terminal with Claude Code in the project, continuing (forked from) its latest session."""
-    exe = str(CLAUDE_EXE) if CLAUDE_EXE.exists() else shutil.which("claude")
+    exe = _exe()
     if not exe:
         return Result("Claude Code's command-line tool isn't installed, so I can't hand it a task.", ok=False)
     args = [exe]

@@ -100,6 +100,8 @@ class WhatsAppRemote:
         self.proc: asyncio.subprocess.Process | None = None
         self.queue: asyncio.Queue[dict] = asyncio.Queue()
         self.linked = False
+        self.me = ""            # this account's number: its "Message yourself" chat is where reports go
+        self.last_chat = ""     # the chat your last command came from
 
     # ------------------------------------------------------------------ bridge process
     async def run(self) -> None:
@@ -152,6 +154,17 @@ class WhatsAppRemote:
         if self.proc and self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.write((json.dumps(cmd) + "\n").encode())
 
+    def notify(self, text: str) -> bool:
+        """A message Jarvis starts itself (a finished Claude Code task): to the chat you last used, else your
+        own "Message yourself" chat."""
+        chat = self.last_chat or self_chat(self.me)
+        if not chat or not self.linked:
+            log.info("WhatsApp report not sent: no chat yet")
+            return False
+        self.send({"type": "send", "chat": chat, "text": text})
+        log.info("WhatsApp report: %r", text[:120])
+        return True
+
     async def _on_event(self, ev: dict) -> None:
         kind = ev.get("type")
         if kind == "qr":
@@ -164,6 +177,7 @@ class WhatsAppRemote:
             self._show_link_page(code)
         elif kind == "ready":
             self.linked = True
+            self.me = str(ev.get("me", "") or "")
             log.info("WhatsApp remote linked (%s)", _mask(ev.get("me", "")))
             self.jarvis.ui.send({"type": "status", "text": "WhatsApp remote linked", "ready": True})
             LINK_PAGE.unlink(missing_ok=True)
@@ -203,6 +217,7 @@ class WhatsAppRemote:
 
     async def _handle(self, ev: dict) -> None:
         chat = ev["chat"]
+        self.last_chat = chat
         self.send({"type": "presence", "chat": chat, "state": "composing"})
         voice = "voice" in ev
         if ev.get("error"):
@@ -257,6 +272,12 @@ class WhatsAppRemote:
         path = MEDIA / f"reply-{int(time.time() * 1000)}.ogg"
         seconds = await asyncio.to_thread(encode_voice_note, audio, SAMPLE_RATE, path)
         self.send({"type": "send_voice", "chat": chat, "path": str(path), "seconds": seconds})
+
+
+def self_chat(me: str) -> str:
+    """'923001234567:12@s.whatsapp.net' (a linked device's id) -> '923001234567@s.whatsapp.net'."""
+    num = me.split("@")[0].split(":")[0]
+    return f"{num}@s.whatsapp.net" if num.isdigit() else ""
 
 
 def _mask(number: str) -> str:
