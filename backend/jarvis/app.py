@@ -85,9 +85,27 @@ _OFFER = re.compile(r"^(?:how (?:else )?(?:can|may) i (?:assist|help)|is there a
                     r"what (?:else )?can i (?:do|help)|anything else i can)", re.I)
 
 
+def _raw_span(raw: str, task: str) -> str:
+    """The task as the user wrote it (capitals, version numbers) rather than the lower-cased command text."""
+    words = re.findall(r"[\w@.'%-]+", task)
+    if not words:
+        return task
+    m = re.search(r"\W+".join(re.escape(w) for w in words), raw, re.I)
+    return m.group(0) if m else task
+
+
+# a reply to "Would you like to give Claude Code a task in it?" that is itself the task: "check whether v119 is live"
+_TASK_START = re.compile(
+    r"^(?:please )?(?:check|verify|confirm|see if|see whether|find out|look at|look into|fix|add|make|update|change|"
+    r"create|build|write|run|test|review|deploy|refactor|remove|delete|rename|implement|investigate|debug|clean up|"
+    r"optimi[sz]e|improve|explain|summari[sz]e|document|set up|install|upgrade|migrate|commit|push|merge|"
+    r"compare|list|show me what|tell me what|move|split|convert|translate)\b")
+
+
 def _tidy_spoken(sentence: str) -> str:
     """One sentence of a model reply, fit to say aloud: the small model sometimes writes markdown lists."""
-    s = re.sub(r"(?m)^\s*(?:[-•*]|\d{1,2}[.)])\s+", "", sentence)   # list markers at the start of a line
+    s = re.sub(r"```[ \t]*\w*", " ", sentence)                       # code fences, with "plaintext" etc.
+    s = re.sub(r"(?m)^\s*(?:[-•*]|\d{1,2}[.)])\s+", "", s)           # list markers at the start of a line
     s = re.sub(r"\s*\n\s*\d{1,2}[.)]?\s*$", "", s)                   # "...confident:\n\n1." -> "...confident:"
     s = re.sub(r"[*_#`]+", "", s)
     s = re.sub(r"\s+", " ", s).strip()
@@ -153,6 +171,7 @@ class Jarvis:
         self._remote_progress = None   # sends a "working on it" message to WhatsApp right away
         self._remote_lock = asyncio.Lock()
         self._cc_last: tuple[str, str] | None = None   # (folder, name) of the last project given a prompt
+        self._cc_here: dict | None = None   # the project just talked about (see pending); "give prompt there"
         self._speech_q: asyncio.Queue | None = None
         self.notices: list[dict] = []
         self.in_call = False          # a "call" = continuous conversation after a wake, until stop/close
@@ -176,6 +195,16 @@ class Jarvis:
     def pending(self, value: dict | None) -> None:
         self._pending = value
         self._pending_at = time.monotonic()
+        if value and value.get("cwd") and value.get("kind") in ("claude_task_offer", "claude_task", "claude_send"):
+            # the project we're talking about: "give prompt there", "do it yourself in my Claude" mean this one
+            self._cc_here = {"cwd": value["cwd"], "name": value["name"], "session": value.get("session", ""),
+                             "task": value.get("task", "") if value["kind"] == "claude_send" else "",
+                             "at": time.monotonic()}
+
+    def _cc_context(self) -> dict | None:
+        """The Claude Code project (and unsent task) of the last quarter of an hour, if any."""
+        c = self._cc_here
+        return c if c and time.monotonic() - c["at"] < 900 else None
 
     def _expire_pending(self) -> None:
         p = self._pending
@@ -748,7 +777,9 @@ class Jarvis:
                                                   "groups": [{"title": t, "items": i} for t, i in CAPABILITIES]}))
                 continue
             if intent.tool == "claude_code_task":  # which project, which chat, then read back: never straight away
-                results.append(await self._claude_prompt(intent.args.get("task", ""), intent.args.get("project", "")))
+                results.append(await self._claude_prompt(_raw_span(text, intent.args.get("task", "")),
+                                                         intent.args.get("project", ""),
+                                                         here=bool(intent.args.get("here"))))
                 continue
             if intent.tool == "say":  # a fixed answer, e.g. something Jarvis can't do yet
                 results.append(Result(intent.args["text"]))
@@ -786,7 +817,10 @@ class Jarvis:
                                       pending={"kind": "song_query", "service": intent.args["service"]}))
                 continue
             if intent.tool == "ack":
-                results.append(Result(f"Loud and clear, {self.cfg['address_as']}. Go ahead."))
+                if re.match(r"^(?:hello|hi|hey)$", t):  # a greeting (WhatsApp "Hi"), not a mic check
+                    results.append(Result(f"Hello, {self.cfg['address_as']}. What can I do for you?"))
+                else:
+                    results.append(Result(f"Loud and clear, {self.cfg['address_as']}. Go ahead."))
                 continue
             if intent.tool == "search_last":  # "yes, search it": the question Jarvis just answered from memory
                 if self._last_question:
@@ -876,9 +910,12 @@ class Jarvis:
         if kind == "choose_project":  # "Which one would you like?" -> a number or a name
             self.pending = None
             idx = parse_choice(t)
+            other = parse(t)
+            if idx is None and other is not None and other.tool not in _WEAK + ("ack", "claude_project_status"):
+                # "give prompt in Polani mono" names a project but asks for something else (5 Nov)
+                return False
             # a listed project named anywhere in the sentence ("tell me the status of Hackathon"), even misheard
             named = _pick_project(t, p["projects"])
-            other = parse(t)
             if idx is not None and (idx == -1 or idx <= len(p["projects"])):
                 target = p["projects"][idx - 1 if idx > 0 else -1]
             elif named:
@@ -910,6 +947,17 @@ class Jarvis:
                 await self._deliver([prepare_task(p["cwd"], p["name"], m.group("task").strip().rstrip("."),
                                                   p.get("session", ""))])
                 return True
+            other = parse(t)
+            if other is not None and other.tool == "claude_code_task" and not other.args.get("project"):
+                task = _raw_span(raw, other.args.get("task", ""))  # "give prompt there to check X"
+                if task:
+                    await self._deliver([prepare_task(p["cwd"], p["name"], task, p.get("session", ""))])
+                    return True
+                t = "yes"  # "give prompt": yes, and ask what
+            elif _TASK_START.match(t) and (other is None or other.tool in _WEAK):  # the task itself
+                await self._deliver([prepare_task(p["cwd"], p["name"], raw.strip().rstrip(".?!"),
+                                                  p.get("session", ""))])
+                return True
             if YES.match(t):
                 self.pending = {**p, "kind": "claude_task"}
                 await self.say(f"What should Claude Code do in {re.sub(r'[-_]+', ' ', p['name'])}?",
@@ -927,11 +975,27 @@ class Jarvis:
                 await self.say("Understood. Standing by.", then_idle=True)
                 return True
             other = parse(t)
-            if other is not None and other.tool not in _WEAK + ("calculate",):
+            task = raw.strip().rstrip(".")
+            if other is not None and other.tool == "claude_code_task" and not other.args.get("project") \
+                    and other.args.get("task"):
+                task = _raw_span(raw, other.args["task"])  # "give it the prompt to fix X": just the task
+            elif other is not None and other.tool not in _WEAK + ("calculate",):
                 return False  # a different command, not a task for Claude Code
             from .tools.claude_code import prepare_task
 
-            await self._deliver([prepare_task(p["cwd"], p["name"], raw.strip().rstrip("."), p.get("session", ""))])
+            await self._deliver([prepare_task(p["cwd"], p["name"], task, p.get("session", ""))])
+            return True
+        if kind == "claude_task_new":  # "What would you like Claude Code to do?" -> the task, then which project
+            self.pending = None
+            if STOP.match(t):
+                return False
+            if NO.match(t):
+                await self.say("Okay.", then_idle=True)
+                return True
+            other = parse(t)
+            if other is not None and other.tool not in _WEAK + ("calculate",):
+                return False  # a new command, or a Claude Code request that names the project: handled afresh
+            await self._deliver([await self._claude_prompt(raw.strip().rstrip("."))])
             return True
         if kind == "claude_send":  # read back; only "yes / send it" launches Claude Code
             if YES.match(t):
@@ -1160,20 +1224,43 @@ class Jarvis:
             await self._deliver([await summarise_message(msgs[idx - 1 if idx > 0 else -1])])
 
     # ------------------------------------------------------------------ Claude Code prompts
-    async def _claude_prompt(self, task: str, project: str = "") -> Result:
+    async def _claude_prompt(self, task: str, project: str = "", here: bool = False) -> Result:
         """Step 1: which project? Nothing is sent to Claude Code until you've picked a project and a chat,
         and confirmed the prompt read back to you."""
-        from .tools.claude_code import _ago, find_project, list_projects, tasks_allowed
+        from .tools.claude_code import _ago, find_project, list_projects, prepare_task, tasks_allowed
 
         if not tasks_allowed():
             return Result("I'm in read-only mode for Claude Code, sir. I can brief you on any project, but I won't "
                           "send it work until you switch that on.", icon="code")
-        if not task:
-            return Result("What would you like Claude Code to do?", icon="code")
+        ctx = self._cc_context()
+        if not task and not project and ctx and ctx["task"]:
+            # "give prompt" / "do it yourself in my Claude": the task we were just talking about, read back again
+            return prepare_task(ctx["cwd"], ctx["name"], ctx["task"], ctx["session"])
+        target = None  # (cwd, name, session, title)
         if project:
-            p = await asyncio.to_thread(find_project, project)
+            p = None
+            if not task:  # "give prompt in Polani mono check the build": the name runs into the task
+                for q in await asyncio.to_thread(list_projects, 12):
+                    label = re.sub(r"[-_]+", " ", q.name).lower()
+                    if project.lower().startswith(label + " "):
+                        p, task = q, project[len(label):].strip()
+                        break
+            p = p or await asyncio.to_thread(find_project, project)
             if p:
-                return self._claude_chat_question(task, p.cwd, p.name, p.session.stem, p.title)
+                target = (p.cwd, p.name, p.session.stem, p.title)
+        elif ctx and (here or not task):  # "give prompt there to ...", or "give prompt" right after a project
+            target = (ctx["cwd"], ctx["name"], ctx["session"], "")
+        if not task:  # remember the project, then ask what to do in it
+            if target:
+                spoken = re.sub(r"[-_]+", " ", target[1])
+                return Result(f"What should Claude Code do in {spoken}?", icon="code",
+                              pending={"kind": "claude_task", "cwd": target[0], "name": target[1],
+                                       "session": target[2]})
+            return Result("What would you like Claude Code to do?", icon="code", pending={"kind": "claude_task_new"})
+        if target and here:  # the project we were discussing: its latest chat, read back for a yes
+            return prepare_task(target[0], target[1], task, target[2])
+        if target:
+            return self._claude_chat_question(task, *target)
         projects = await asyncio.to_thread(list_projects, 6)
         last = self._cc_last
         if last and last[0] in [q.cwd for q in projects]:  # last time's project first
@@ -1311,6 +1398,8 @@ class Jarvis:
         self.ui.send({"type": "card", "kind": "clear"})
         self._set_state("acting", icon="code")
         task = task or p["task"]
+        if self._cc_here and self._cc_here["cwd"] == p["cwd"]:
+            self._cc_here["task"] = ""  # sent: "give prompt" later mustn't send it twice
         spoken = re.sub(r"[-_]+", " ", p["name"])
         if not await asyncio.to_thread(cc.signed_in):
             await self._deliver([Result(cc.NOT_SIGNED_IN, ok=False, icon="code")])
@@ -1516,7 +1605,7 @@ class Jarvis:
         self.ui.send({"type": "reply", "text": sentence, "append": True})
         if not filler:  # "One moment." isn't worth repeating when you say "What?"
             self._said.append(sentence)
-        if self._remote_said is not None:
+        if self._remote_said is not None and not filler:  # on WhatsApp the answer arrives whole: no "One moment"
             self._remote_said.append(sentence)
         self._speech_q.put_nowait(sentence)
 

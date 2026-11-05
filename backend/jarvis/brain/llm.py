@@ -52,7 +52,9 @@ def system_prompt(address_as: str) -> str:
         "say you can look it up (the user can say \"search it\").\n"
         "- What you can do: open apps, files, folders and websites; find where a file is; web search and "
         "research with ChatGPT or Claude; weather; play music on YouTube or "
-        "Spotify; volume and playback; Claude Code project status; email (read the inbox, find emails waiting "
+        "Spotify; volume and playback; Claude Code (project status, and giving a project a task that you read "
+        "back and send once the user confirms; they just say, for example, 'give prompt in Solvix to fix the "
+        "login'; never explain how to use Claude Code by hand); email (read the inbox, find emails waiting "
         "for a reply, draft and send emails once the user confirms); WhatsApp messages to contacts (sent only once the user "
         "confirms); maths; time and date; lock the screen; put the laptop to sleep; "
         "answer questions. Use the email tools for anything about email. Never offer anything else (no "
@@ -66,6 +68,8 @@ def style_examples(address_as: str) -> list[dict]:
     honest answers about what Jarvis is. They never change, so they stay in Ollama's cached prompt prefix."""
     s = address_as
     pairs = [
+        ("How are you?",
+         f"Very well, thank you, {s}. All systems running smoothly. How's your day going?"),
         ("Are you actually alive?",
          f"No, {s}, I'm an AI: no body and no heartbeat, just software running on your laptop. I do enjoy our "
          "chats, though, in my own way."),

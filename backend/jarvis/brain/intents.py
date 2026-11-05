@@ -407,9 +407,51 @@ def _claude_task_control(t: str) -> Intent | None:
     return None
 
 
+_PROMPT_HEAD = re.compile(
+    r"^(?:give|send|enter|put|type|write|paste|add|pass|submit|drop)(?: it| this| that)?(?: as)?"
+    r"(?: (?:a|the|my|this|that|one|another))? (?:prompt|task|command|request|instruction)s?\b(?P<rest>.*)$")
+_PROMPT_HERE = re.compile(r"^(?:there|here|in it|to it|in there|in that(?: one| project)?|in this(?: one| project)?|"
+                          r"in the same(?: one| project)?)\b\s*")
+_PROMPT_PROJECT = re.compile(r"^(?:in|into|for|on|to|at|inside) (?:my |the )?(?:project )?(?P<p>.+)$")
+_PROJECT_END = re.compile(r"\s+(?:(?:in|on|with|using|via|through) (?:my )?claude(?: code)?|project)\b[:,]?\s*|"
+                          r"\s*[:,]\s+|\s+(?:to|that|saying|which says|and ask it to|and tell it to)\s+")
+_CLAUDE_AGAIN = re.compile(r"^(?:just |you )?(?:do it|do that|send it|put it|give it|pass it|run it)(?: yourself)?"
+                           r" (?:in|on|to|with|through|using|into) (?:my |the )?claude(?: code)?$")
+
+
+def _prompt_request(t: str) -> Intent | None:
+    """A task for Claude Code, said the way people say it on the phone (5 Nov WhatsApp test): "give prompt in
+    Polani mono", "enter this as a prompt in my project Polani mono in Claude Code <task>", "give prompt there
+    to <task>" (the project we were just talking about), "give prompt", "do it yourself in my Claude"."""
+    if _CLAUDE_AGAIN.match(t):
+        return Intent("claude_code_task", {"project": "", "task": "", "here": "1"})
+    m = re.match(r"^prompt claude(?: code)?(?: (?:in|for|on) (?:my |the )?(?:project )?(?P<p>.+?))? to (?P<task>.+)$", t)
+    if m:
+        return Intent("claude_code_task", {"project": (m.group("p") or "").strip(), "task": m.group("task").strip()})
+    m = _PROMPT_HEAD.match(t)
+    if not m:
+        return None
+    rest = re.sub(r"^\s*(?:to|for|in|on|into) (?:my )?claude(?: code)?\b", "", m.group("rest")).strip()
+    project, here = "", False
+    h = _PROMPT_HERE.match(rest)
+    if h:
+        here, rest = True, rest[h.end():]
+    else:
+        pm = _PROMPT_PROJECT.match(rest)
+        if pm:
+            body = pm.group("p")
+            end = _PROJECT_END.search(body)
+            project, rest = (body[:end.start()], body[end.end():]) if end else (body, "")
+    task = re.sub(r"^(?:to|that|saying)\s+", "", rest.strip()).strip(" :,")
+    args = {"project": project.strip(), "task": task}
+    if here:
+        args["here"] = "1"
+    return Intent("claude_code_task", args)
+
+
 def _claude(t: str) -> Intent | None:
     """Claude Code projects: list them, a project's status, or a task for one."""
-    hit = _claude_task_control(t)
+    hit = _claude_task_control(t) or _prompt_request(t)
     if hit:
         return hit
     # a prompt for Claude Code. Without a project named, Jarvis asks which project (and which chat) first.
@@ -628,6 +670,11 @@ def _parse(text: str, default_service: str = "youtube",
         return Intent("stop")
     if _ACK.match(t):
         return Intent("ack")
+    if t.startswith("listen to "):
+        from rapidfuzz import fuzz
+
+        if fuzz.ratio(t, "listen to me please") >= 85:  # heard "listen to my plays" (5 Nov): not a song request
+            return Intent("ack")
     if re.match(r"^(?:what (?:all |else )?can you do(?: for me)?|what (?:all |else )?can you help (?:me )?with|help|help me|"
                 r"what do you do|what are you capable of|how can you help(?: me)?|what are your (?:skills|commands|"
                 r"features|capabilities|abilities|powers)|(?:list|show|tell me)(?: me)? (?:your |all )?(?:of )?(?:your )?"

@@ -260,7 +260,7 @@ def test_hello_is_not_a_project_name(jarvis):  # log: "hello" -> "no Claude Code
     j, said, tools, _ = jarvis
     j.pending = {"kind": "choose_project", "projects": [r"C:\x\Polani mono", r"C:\x\Solvix"]}
     _turn(j, "hello")
-    assert tools == [] and said[-1].startswith("Loud and clear") and j.pending is None
+    assert tools == [] and said[-1].startswith("Hello, sir.") and j.pending is None
 
 
 def test_which_project_is_asked_once_not_forever(jarvis):
