@@ -129,6 +129,75 @@ _FILE_KIND = (r"pdf|file|document|doc|docx|spreadsheet|sheet|excel file|excel sh
 _KIND_NORMAL = {"excel file": "excel", "excel sheet": "excel", "word file": "word", "word document": "word",
                 "word doc": "word", "slide deck": "deck", "docx": "word", "text file": "text", "file": ""}
 
+# where a file lives, as people say it: "from my downloads", "on the desktop", "in documents folder"
+_PLACES = r"(?:desktop|downloads?|documents?|pictures?|photos|music|videos?|one ?drive)"
+_LOC = re.compile(r"\s+(?:in|on|from|inside|at|under|within|into)\s+(?:my |the |this )?(?P<place>" + _PLACES +
+                  r")(?: folder| directory)?$")
+_ON_MACHINE = re.compile(r"\s+(?:in|on|from|inside)\s+(?:my |this |the )?(?:laptop|computer|pc|system|drive|machine|"
+                         r"c drive|hard drive|disk)$")
+_EXT = re.compile(r"\.(?:rar|zip|7z|pdf|docx?|xlsx?|xlsm|csv|pptx?|txt|md|png|jpe?g|heic|gif|mp4|mov|mkv|mp3|wav|"
+                  r"exe|msi|iso|psd|ai|json|py|js|html?)\b|\bdot (?:rar|zip|pdf|docx?|xlsx?|csv|pptx?|txt|png|jpe?g|mp4|mp3|exe)\b")
+_FOLDERISH = r"(?:folder|directory|project|repo|repository)"
+
+
+def _place(name: str) -> str:
+    n = name.replace(" ", "")
+    return {"download": "downloads", "document": "documents", "picture": "pictures", "photos": "pictures",
+            "video": "videos"}.get(n, n)
+
+
+def file_target(s: str) -> dict:
+    """"flyer data.rar file from my downloads" -> {query: "flyer data.rar", kind: "", where: "downloads"};
+    "a project solvix on my desktop" -> {query: "solvix", kind: "folder", where: "desktop"}."""
+    s = re.sub(r"\s+dot (\w+)\b", r".\1", _ON_MACHINE.sub("", s.strip()))  # "report dot pdf" -> "report.pdf"
+    where = ""
+    m = _LOC.search(s)
+    if m:
+        where, s = _place(m.group("place")), s[:m.start()]
+    s = _ON_MACHINE.sub("", s)
+    s = re.sub(r"^(?:the|my|a|an|this|that|any)\s+", "", s.strip())
+    kind = ""
+    m = re.match(r"^" + _FOLDERISH + r"(?:s)?(?: (?:called|named|for))?\s+(?P<q>.+)$", s)
+    if m:
+        kind, s = "folder", m.group("q")
+    m = re.match(r"^(?P<q>.+?)\s+" + _FOLDERISH + r"$", s)
+    if m:
+        kind, s = "folder", m.group("q")
+    m = re.match(r"^(?:(?P<k>" + _FILE_KIND + r")s?)(?: (?:called|named))?\s+(?P<q>.+)$", s)
+    if m and m.group("k") in ("file", "pdf", "document", "spreadsheet", "presentation", "image", "photo", "video",
+                              "zip", "excel file", "word file", "word document"):
+        kind, s = _KIND_NORMAL.get(m.group("k"), m.group("k")), m.group("q")
+    m = re.match(r"^(?P<q>.+?)\s+(?P<k>" + _FILE_KIND + r")$", s)
+    if m and not kind:
+        kind, s = _KIND_NORMAL.get(m.group("k"), m.group("k")), m.group("q")
+    s = re.sub(r"\s+(?:called|named)$", "", re.sub(r"^(?:called|named)\s+", "", s.strip()))
+    return {"query": s.strip(), "kind": kind, "where": where}
+
+
+def _file_signal(s: str) -> bool:
+    """Words that make "where is X" about a file, not a place or a fact ("where is Lahore")."""
+    return bool(_LOC.search(s) or _ON_MACHINE.search(s) or _EXT.search(s)
+                or re.search(r"\b(?:" + _FILE_KIND + r"|" + _FOLDERISH + r"|files|folders)\b", s))
+
+
+def _find_file(t: str) -> Intent | None:
+    """Questions about where a file is: "where is the flyer data.rar file in my laptop", "check if there is
+    a project Solvix on my desktop", "locate my CV", "do I have a file called budget"."""
+    m = re.match(r"^(?:tell me |show me |can you tell me |do you know )?where(?:'s| is| are| did i (?:save|put|keep|"
+                 r"download|store)| have i (?:saved|put|kept|stored)| can i find)(?: the| my| a)? (?P<x>.+?)"
+                 r"(?: (?:is|are|located|saved|kept|stored|gone))?$", t)
+    if m and _file_signal(m.group("x")):
+        return Intent("find_file", file_target(m.group("x")))
+    m = re.match(r"^(?:check |see |find out |tell me |can you check )?(?:if|whether) (?:there(?:'s| is| are) |"
+                 r"i have |i've got |we have )(?:a |an |any |the )?(?P<x>.+?)(?: or not)?$", t) \
+        or re.match(r"^(?:do i have|is there|are there|have i got|does)(?: a| an| any| the)? (?P<x>.+?)(?: exist| or not)?$", t)
+    if m and _file_signal(m.group("x")):
+        return Intent("find_file", file_target(m.group("x")))
+    m = re.match(r"^(?:locate|find the location of|find where)(?: the| my)? (?P<x>.+?)(?: is)?$", t)
+    if m:
+        return Intent("find_file", file_target(m.group("x")))
+    return None
+
 
 def _media(t: str) -> Intent | None:
     if re.match(r"^(?:pause|resume|unpause|continue|continue playing|play|stop the music|stop music|stop playing|"
@@ -357,7 +426,13 @@ def _claude(t: str) -> Intent | None:
 
 _AI = r"(?:chat ?gpt|gpt|claude|both(?: of them)?|chat ?gpt and claude|claude and chat ?gpt)"
 _NOT_RESEARCH = re.compile(r"\b(?:google|the web|online|internet|youtube|spotify|files?|folders?|documents?|pdf|"
-                           r"e-?mails?|inbox|my computer|laptop|whatsapp|contacts?)\b")
+                           r"e-?mails?|inbox|my computer|laptop|whatsapp|contacts?|desktop|downloads)\b")
+# "... and tell me the summary", "... in a new chat": how to answer, not part of the question
+_RESEARCH_EXTRAS = re.compile(
+    r"[\s,]*\b(?:and |then )?(?:tell|give|send|read|show) me (?:a |the |its |their )?(?:short |quick |brief |small )?"
+    r"(?:summary|summery|summarise|summarize|gist|overview)(?: of (?:it|that|the answers?|them))?\b"
+    r"|[\s,]*\b(?:and |then )?summari[sz]e(?: it| that| them| the answers?)?\b"
+    r"|[\s,]*\b(?:in|on|with|using|start|open) (?:a |an )?(?:new|fresh|separate) (?:chat|conversation|thread|tab)\b")
 
 
 def _ai_services(name: str) -> str:
@@ -371,8 +446,7 @@ def _research(t: str) -> Intent | None:
     X", "open ChatGPT and research X", "search X on Claude". Naming one assistant asks only that one."""
     if re.search(r"\bclaude code\b", t):
         return None
-    t2 = re.sub(r"[\s,]*(?:and |then )?(?:tell|give|read|send) me (?:a |the )?(?:short |quick |brief )?summary"
-                r"(?: of (?:it|that|the answers?))?$|[\s,]*(?:and |then )?summari[sz]e(?: it| that)?$", "", t)
+    t2 = re.sub(r"\s+", " ", _RESEARCH_EXTRAS.sub("", t)).strip()
     # on Google / the web: open the results and read back what they say
     g = re.search(r"\s+(?:on|in|using|with|via|from|through) (?:google|the web|the internet)$|\s+online$", t2)
     m = re.match(r"^(?:do (?:some |a )?(?:quick )?research|research|look into|find out|search|look up|find)"
@@ -400,13 +474,16 @@ def _research(t: str) -> Intent | None:
                  r" for| more about)? (?P<q>.+)$", t2)
     if m:
         return Intent("ai_research", {"query": m.group("q"), "services": _ai_services(svc)})
-    m = re.match(r"^(?:search|look up|find|google)(?: about| for| up)? (?P<q>.+)$", t2)
+    m = re.match(r"^(?:search|look up|find|google|ask|tell me|explain|summari[sz]e)(?: about| for| up| on| me)? "
+                 r"(?P<q>.+)$", t2)
     if m and svc:  # "search X on ChatGPT"
         return Intent("ai_research", {"query": m.group("q"), "services": _ai_services(svc)})
+    if svc and len(t2.split()) >= 2 and not _NOT_RESEARCH.search(t2):  # "who was Hitler on ChatGPT"
+        return Intent("ai_research", {"query": t2, "services": _ai_services(svc)})
     # plain "search X": research it, unless it names Google, YouTube, files, email...
     m = re.match(r"^(?:search for information (?:on|about)|search about|search for|search|look up) (?P<q>.+)$", t2)
     if m and not _NOT_RESEARCH.search(t2) and not re.search(r"\b(?:" + _FILE_KIND + r")$", t2) \
-            and not m.group("q").startswith("my "):  # "search for my CV" is a file
+            and not _EXT.search(t2) and not m.group("q").startswith("my "):  # "search for my CV" is a file
         return Intent("ai_research", {"query": m.group("q"), "services": ""})
     return None
 
@@ -455,17 +532,27 @@ def _play(t: str, default_service: str) -> Intent | None:
 
 
 def _open(t: str, resolve_open: Callable[[str, str], Intent] | None) -> Intent | None:
-    m = re.match(r"^(?:find|search for|look for|locate)(?: me)? (?:the |my |a )?(?P<q>.+?)(?: (?P<kind>" + _FILE_KIND +
-                 r"))?(?: on (?:my |this )?(?:computer|laptop|pc|drive))?$", t)
+    m = re.match(r"^(?:find|search for|look for|search my (?:laptop|computer|pc) for)(?: me)? (?P<x>.+)$", t)
     if m:
-        kind = _KIND_NORMAL.get(m.group("kind") or "", m.group("kind") or "")
-        return Intent("open_file", {"query": m.group("q"), "kind": kind})
+        spec = file_target(m.group("x"))
+        if spec["query"]:
+            return Intent("open_file", spec)
     m = re.match(r"^(?P<verb>open|launch|start|run|bring up|show me|show|go to|take me to|navigate to|visit|load|"
                  r"fire up|pull up|switch to|get me|open up) (?:up )?(?P<target>.+)$", t)
     if not m:
         return None
     target = re.sub(r"^(?:the|my|a|an|up)\s+", "", m.group("target")).strip()
     verb = m.group("verb")
+    # "open flyer data.rar file from my downloads", "open folder Solvix on desktop", "open the Solvix folder"
+    if _LOC.search(target) or _EXT.search(target) or re.match(r"^" + _FOLDERISH + r"s? ", target) \
+            or re.search(r"\s" + _FOLDERISH + r"$", target):
+        spec = file_target(target)
+        if spec["kind"] == "folder" and not spec["where"] and re.fullmatch(_PLACES, spec["query"]):
+            return Intent("open_folder", {"name": _place(spec["query"])})  # "open my downloads folder"
+        if not spec["query"] and spec["where"]:
+            return Intent("open_folder", {"name": spec["where"]})
+        if spec["query"]:
+            return Intent("open_file", spec)
     fm = re.match(r"^(?P<q>.+?) (?P<kind>" + _FILE_KIND + r")$", target)
     if fm and fm.group("kind") in ("file", "pdf", "document", "doc", "docx", "spreadsheet", "sheet", "presentation",
                                    "deck", "slides", "slide deck", "ppt", "csv", "excel file", "excel sheet",
@@ -543,15 +630,54 @@ def _parse(text: str, default_service: str = "youtube",
         hit = f(t)
         if hit:
             return hit
-    hit = _whatsapp(t) or _claude(t) or _email(t) or _liked(t) or _play(t, default_service) or _research(t)
+    if _SEARCH_LAST.match(t):
+        return Intent("search_last")
+    hit = (_whatsapp(t) or _claude(t) or _email(t) or _liked(t) or _play(t, default_service) or _find_file(t)
+           or _weather(t) or _research(t))
     if hit:
         return hit
     m = re.match(r"^(?:search google for|search the web for|google search for|search online for|look online for|"
                  r"web search for|search google|search for|web search|look up|google|search) (?P<q>.+?)"
                  r"(?: on google| on the web| online| on the internet)?$", t)
-    if m and not re.search(r"\b(?:youtube|spotify)$", t) and not re.search(r"\b(?:" + _FILE_KIND + r")$", t):
+    if m and not re.search(r"\b(?:youtube|spotify)$", t) and not re.search(r"\b(?:" + _FILE_KIND + r")$", t) \
+            and not _EXT.search(t) and not _LOC.search(t):
         return Intent("web_search", {"query": m.group("q")})
     m = re.match(r"^(?:close|quit|exit|kill|shut down|shut) (?:the |my )?(?P<app>.+?)(?: app| application| window)?$", t)
     if m and m.group("app") not in ("it", "this", "that", "everything", "all"):
         return Intent("close_app", {"name": m.group("app")})
-    return _open(t, resolve_open)
+    hit = _open(t, resolve_open)
+    if hit is None:
+        # "No Jarvis, open ChatGPT app", "actually, play Dilruba": a correction followed by the real command
+        m = _CORRECTION.match(t)
+        if m:
+            return _parse(m.group("rest"), default_service, resolve_open)
+    return hit
+
+
+_CORRECTION = re.compile(r"^(?:no|nope|nah|wait|actually|sorry|i said|i mean|no i said|not that|no no)[\s,]+"
+                         r"(?:jarvis[\s,]+)?(?:i said[\s,]+)?(?P<rest>\w.+)$")
+# "yes, search it", "google it", "look it up": search the question Jarvis just couldn't answer
+_SEARCH_LAST = re.compile(r"^(?:(?:yes|yeah|yep|ok|okay|sure|please|then|go ahead and|go ahead)\s+)*"
+                          r"(?:search|google|research|look up|find)(?: (?:it|that|this|for it|for that))?(?: up)?"
+                          r"(?: (?:on|in|using) (?:google|the web|the internet)| online)?$"
+                          r"|^(?:yes |ok |okay |sure )?look (?:it|that) up(?: online| on google)?$")
+
+
+def _weather(t: str) -> Intent | None:
+    """"what's the weather", "today's weather in Lahore", "will it rain tomorrow", "temperature in Dubai"."""
+    if len(t.split()) > 14 or not re.search(r"\b(?:weather|temperature|forecast|rain|raining|rainy|humid|humidity|"
+                                            r"degrees|sunny|cloudy|windy|hot|cold|warm)\b", t):
+        return None
+    if re.match(r"^(?:search|google|look up|research|play|open)\b", t):  # "google weather in Lahore": Google it
+        return None
+    if not re.search(r"\b(?:weather|temperature|forecast|will it|is it|going to|gonna|how hot|how cold|how warm|"
+                     r"degrees|humidity)\b", t):
+        return None
+    when = "tomorrow" if re.search(r"\btomorrow\b", t) else "today"
+    city = ""
+    m = re.search(r"\b(?:in|at|for|of) (?!the morning|the evening|the afternoon|the night|today|tomorrow|"
+                  r"the weekend|this week|celsius|fahrenheit)(?P<city>[a-z][a-z .'-]{1,40}?)"
+                  r"(?: (?:today|tomorrow|right now|now|this week|this evening|tonight|currently))?$", t)
+    if m:
+        city = re.sub(r"^(?:the city of|city of)\s+", "", m.group("city")).strip()
+    return Intent("weather", {"city": city, "when": when})

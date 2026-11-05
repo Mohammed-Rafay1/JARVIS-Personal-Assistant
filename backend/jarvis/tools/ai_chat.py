@@ -20,9 +20,11 @@ from dataclasses import dataclass
 
 from . import CTX
 from .base import Result, tool
-from .whatsapp import U32, _bring_to_front, _is_front, _keys, _name
+from .whatsapp import U32, _is_front, _keys, _name, screen_locked
+from .whatsapp import _bring_to_front as _front
 
 log = logging.getLogger(__name__)
+SEND_WITHIN = 60.0   # seconds to get the question typed and sent; past that, stop rather than paste late
 
 
 @dataclass(frozen=True)
@@ -38,7 +40,7 @@ class App:
 
 APPS = {
     "chatgpt": App("ChatGPT", "OpenAI.Codex_2p2nqsd0c76g0!App", "chatgpt",
-                   ("do anything", "ask anything", "message chatgpt", "chat with chatgpt"),
+                   ("ask chatgpt", "do anything", "ask anything", "message chatgpt", "chat with chatgpt"),
                    ("stop", "stop streaming", "stop generating", "stop response")),
     "claude": App("Claude", "Claude_pzs8sxrjxfjjc!Claude", "claude",
                   ("prompt", "write your prompt to claude", "reply to claude", "how can i help you today?"),
@@ -133,29 +135,57 @@ def _com() -> None:
 
 
 def _window(app: App):
+    """The app's main window, even when it was closed to the tray (hidden): then it is shown again.
+    Plain Win32 listing: the UI Automation listing took 2-5 s a time, and a hidden window never showed
+    up in it, so the old wait loop ran for minutes (4 Nov, 01:38 and 01:41)."""
+    import ctypes.wintypes
+
     import psutil
-    from pywinauto import Desktop
+    from pywinauto.controls.uiawrapper import UIAWrapper
+    from pywinauto.uia_element_info import UIAElementInfo
 
     pids = {p.pid for p in psutil.process_iter(["name"]) if app.process in (p.info["name"] or "").lower()}
-    for w in Desktop(backend="uia").windows():
-        try:
-            if w.process_id() in pids and (w.window_text() or "").strip() == app.name:
-                return w
-        except Exception:
-            continue
-    return None
+    if not pids:
+        return None
+    found: list[tuple[int, int, int]] = []   # (visible, area, hwnd)
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+    def each(hwnd, _):
+        pid = ctypes.wintypes.DWORD()
+        U32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and U32.GetWindow(hwnd, 4) == 0:  # GW_OWNER: top-level, not a popup
+            buf = ctypes.create_unicode_buffer(256)
+            U32.GetWindowTextW(hwnd, buf, 256)
+            if buf.value.strip() == app.name:
+                r = ctypes.wintypes.RECT()
+                U32.GetWindowRect(hwnd, ctypes.byref(r))
+                found.append((int(bool(U32.IsWindowVisible(hwnd))), (r.right - r.left) * (r.bottom - r.top), hwnd))
+        return True
+    U32.EnumWindows(each, 0)
+    if not found:
+        return None
+    visible, _, hwnd = max(found)
+    if not visible:
+        log.info("%s was hidden in the tray; showing it", app.name)
+        U32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        time.sleep(0.8)
+    elif U32.IsIconic(hwnd):
+        U32.ShowWindow(hwnd, 9)
+    return UIAWrapper(UIAElementInfo(hwnd))
 
 
-def _open(app: App):
+def _open(app: App, deadline: float):
     w = _window(app)
     if w is not None:
         return w
     app_id = (CTX.apps.apps.get(app.name) if CTX.apps else None) or app.app_id
+    log.info("%s isn't open; starting it", app.name)
     os.startfile(f"shell:AppsFolder\\{app_id}")  # noqa: S606 - the user's own installed app
-    for _ in range(50):
-        time.sleep(0.4)
+    while time.monotonic() < min(deadline, time.monotonic() + 25):
+        time.sleep(0.5)
         w = _window(app)
         if w is not None:
+            time.sleep(1.5)  # let it finish drawing before looking for its buttons
             return w
     raise AppError("not_installed")
 
@@ -189,10 +219,10 @@ def _press(button) -> None:
 
 
 def _box(w, app: App):
-    boxes = _find(w, lambda e: _ctype(e) == "Edit" and _name(e).strip().lower() in app.boxes and _visible(e), tries=10)
-    if not boxes:  # the label changes between versions; the rich editor is the only one
-        boxes = _find(w, lambda e: _ctype(e) == "Edit" and _visible(e)
-                      and "prosemirror" in (e.element_info.class_name or "").lower(), tries=4)
+    # by its label, or (the label changes between versions: "Ask ChatGPT" since Nov 2026) the rich editor
+    boxes = _find(w, lambda e: _ctype(e) == "Edit" and _visible(e) and (
+        _name(e).strip().lower() in app.boxes or "prosemirror" in (e.element_info.class_name or "").lower()),
+        tries=10)
     if not boxes:
         raise AppError("error", "no visible message box")
     return boxes[-1]
@@ -220,6 +250,13 @@ def _has_focus(e) -> bool:
         return bool(e.element_info.element.CurrentHasKeyboardFocus)
     except Exception:
         return False
+
+
+def _bring_to_front(w, name: str = "") -> None:
+    try:
+        _front(w, name or "the app")
+    except Exception as e:
+        raise AppError("error", str(e)) from None
 
 
 def _paste(w, box, text: str) -> None:
@@ -256,9 +293,19 @@ def submit(key: str, prompt: str):
     """Open the app, start a new chat, paste the question and send it. Returns the window."""
     _com()
     app = APPS[key]
-    w = _open(app)
+    deadline = time.monotonic() + SEND_WITHIN
+    if screen_locked():
+        raise AppError("locked", "Windows is locked")
+    t0 = time.monotonic()
+    w = _open(app, deadline)
+    log.info("%s: window ready after %.1fs", app.name, time.monotonic() - t0)
     if U32.IsIconic(w.handle):
         U32.ShowWindow(w.handle, 9)
+    if key == "chatgpt":  # the app also has a Codex mode, with its own box: only ever type into ChatGPT
+        modes = _find(w, lambda e: _ctype(e) == "Button" and _name(e).lower().startswith("switch mode"), tries=6)
+        current = _name(modes[0]).split(":")[-1].strip() if modes else ""
+        if current and current.lower() != "chatgpt":
+            raise AppError("error", f"the app is in {current} mode, not ChatGPT")
     if app.mode:  # Claude's window also holds Claude Code sessions: switch to chats first, never type into Code
         modes = _find(w, lambda e: _ctype(e) == "RadioButton" and _name(e).strip().lower() == app.mode, tries=10)
         if not modes:
@@ -273,12 +320,18 @@ def submit(key: str, prompt: str):
         if not _selected(modes[0]):
             raise AppError("error", "chat mode not selected")
     new = _find(w, lambda e: _ctype(e) == "Button" and _name(e).strip().lower() in app.new_chat, tries=10)
-    if not new:
+    _bring_to_front(w, app.name)
+    if new:
+        _press(new[0])
+    elif _is_front(w):  # sidebar hidden: the app's own New chat shortcut (Ctrl+Shift+O)
+        log.info("%s: no New chat button; using the shortcut", app.name)
+        _keys(0x11, 0x10, 0x4F)
+    else:
         raise AppError("error", "no New chat button")
-    _bring_to_front(w)
-    _press(new[0])
     time.sleep(1.2)
     box = _box(w, app)
+    if time.monotonic() > deadline:  # never paste a question minutes after it was asked
+        raise AppError("error", f"took over {SEND_WITHIN:.0f}s to get ready")
     _paste(w, box, prompt)
     sends = _find(w, lambda e: _ctype(e) == "Button" and _name(e).strip().lower() in ("send", "send message",
                                                                                       "send prompt"), tries=6)
@@ -292,14 +345,25 @@ def submit(key: str, prompt: str):
     return w
 
 
-def wait_answer(key: str, w, prompt: str, timeout: float = 180) -> Answer:
+def wait_answer(key: str, w, prompt: str, timeout: float = 120) -> Answer:
     """Read the conversation until the answer stops growing and the app no longer shows Stop."""
     _com()
     app = APPS[key]
     start = time.monotonic()
-    deadline, last, stable, seen = start + timeout, "", 0, 0.0
+    deadline, last, stable, seen, nudged = start + timeout, "", 0, 0.0, False
     while time.monotonic() < deadline:
         time.sleep(1.0)
+        if not last and not nudged and time.monotonic() - start > 25 and not screen_locked():
+            # nothing readable yet: the app stops updating what it shows while it's covered or minimised
+            # (4 Nov, 12:01: the answer was written but never readable), so put it back in view once
+            nudged = True
+            log.info("%s: no answer readable yet; bringing it into view", app.name)
+            try:
+                if U32.IsIconic(w.handle):
+                    U32.ShowWindow(w.handle, 9)
+                _front(w, app.name)
+            except Exception:
+                pass
         t0 = time.monotonic()
         try:
             items = w.descendants()
@@ -329,6 +393,9 @@ async def ask_all(keys: list[str], prompt: str) -> list[Answer]:
         except AppError as e:
             log.warning("%s: stopped before sending: %s", APPS[k].name, e.why or e)
             answers[k] = Answer(k, problem=str(e))
+            if str(e) == "locked":  # the same for every app: don't try the next one
+                answers.update({o: Answer(o, problem="locked") for o in keys if o not in answers})
+                break
         except Exception as e:
             log.warning("%s: couldn't send the question: %s", APPS[k].name, e)
             answers[k] = Answer(k, problem="error")
@@ -364,6 +431,15 @@ def _names(keys: list[str]) -> str:
     return " and ".join(APPS[k].name for k in keys)
 
 
+async def _from_web(query: str) -> tuple[str, list[tuple[str, str]]]:
+    """The same question answered from web results, when the apps couldn't answer."""
+    from .web_research import answer_from, fetch_results, search_query
+
+    q = search_query(query)
+    results = await fetch_results(q)
+    return await answer_from(q, results), results
+
+
 @tool("Research a question: ask it in new ChatGPT and Claude chats, then summarise their answers",
       query="The question or topic", services="chatgpt, claude, or both (default)")
 async def ai_research(query: str, services: str = "") -> Result:
@@ -376,7 +452,10 @@ async def ai_research(query: str, services: str = "") -> Result:
     missing = [a.service for a in answers if a.problem == "not_installed"]
     failed = [a.service for a in answers if a.problem == "error"]
     unread = [a.service for a in answers if a.problem == "unread"]
+    locked = any(a.problem == "locked" for a in answers)
     notes = []
+    if locked:
+        notes.append("Your laptop is locked, so I couldn't use the apps.")
     if missing:
         notes.append(f"I couldn't open the {_names(missing)} app.")
     if failed:
@@ -384,9 +463,18 @@ async def ai_research(query: str, services: str = "") -> Result:
     if unread:
         notes.append(f"{_names(unread)} has your answer in its app, but I couldn't read it back.")
     answered = [a.service for a in answers if a.text]
-    say = (f"{summary} The full answer{'s are' if len(answered) > 1 else ' is'} open in {_names(answered)}."
-           if summary else f"I couldn't get an answer, {sir}.")
     card = {"kind": "research", "query": query, "summary": summary,
             "answers": [{"service": APPS[a.service].name, "text": a.text[:1500], "problem": a.problem}
                         for a in answers]}
-    return Result(" ".join([say] + notes), ok=bool(summary), icon="web", card=card)
+    if summary:
+        say = f"{summary} The full answer{'s are' if len(answered) > 1 else ' is'} open in {_names(answered)}."
+        return Result(" ".join([say] + notes), icon="web", card=card)
+    # never come back empty-handed: answer from the web instead, and say why
+    web, results = await _from_web(query)
+    if web:
+        log.info("research answered from the web instead")
+        card["summary"] = web
+        card["answers"].append({"service": "Web results", "problem": "",
+                                "text": "\n".join(f"{t}: {s}" for t, s in results)[:1500]})
+        return Result(" ".join(notes + [f"Here's what the web says: {web}"]), icon="web", card=card)
+    return Result(" ".join([f"I couldn't get an answer, {sir}."] + notes), ok=False, icon="web", card=card)

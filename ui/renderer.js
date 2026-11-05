@@ -263,7 +263,8 @@ function showCard(c) {
           el('div', { class: 'sub', style: 'white-space:normal' },
             a.text ? (a.text.length > 320 ? `${a.text.slice(0, 320)}…` : a.text)
               : (a.problem === 'not_installed' ? 'The app didn’t open.'
-                : a.problem === 'unread' ? 'The answer is in the app.' : 'Not asked: I couldn’t type into it safely.'))))),
+                : a.problem === 'unread' ? 'The answer is in the app.'
+                  : a.problem === 'locked' ? 'Not asked: the laptop was locked.' : 'Not asked: I couldn’t type into it safely.'))))),
         { sticky: true });
       break;
     case 'media':
@@ -316,6 +317,13 @@ function showCard(c) {
     }
     case 'sent':
       addCard(el('div', {}, el('h4', {}, 'Sent ✓'), el('div', {}, `${c.subject} → ${c.to}`)), { ttl: 6000 });
+      break;
+    case 'weather':
+      addCard(el('div', {}, el('h4', {}, `Weather · ${c.city}${c.when === 'tomorrow' ? ' · tomorrow' : ''}`),
+        c.temp != null && c.when !== 'tomorrow' ? el('div', { style: 'font-size:28px;font-weight:600;margin-bottom:4px' }, `${Math.round(c.temp)}°C`) : null,
+        el('div', { class: 'body' }, c.summary),
+        c.humidity != null && c.when !== 'tomorrow' ? el('div', { class: 'sub', style: 'margin-top:6px' },
+          `Humidity ${c.humidity}% · Wind ${Math.round(c.wind || 0)} km/h`) : null), { ttl: 30000 });
       break;
     default: break;
   }

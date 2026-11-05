@@ -9,7 +9,7 @@ from jarvis.brain.intents import NO, YES, normalize, parse, parse_choice  # noqa
 
 CASES = [
     # (spoken, tool, args subset)
-    ("Hey Jarvis, open my Downloads folder.", "open_any", {"name": "downloads folder"}),
+    ("Hey Jarvis, open my Downloads folder.", "open_folder", {"name": "downloads"}),
     ("Jarvis open Excel please", "open_any", {"name": "excel"}),
     ("Can you launch VS Code?", "open_any", {"name": "vs code"}),
     ("Open the Q3 proposal PDF", "open_file", {"query": "q3 proposal", "kind": "pdf"}),

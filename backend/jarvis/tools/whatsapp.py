@@ -78,20 +78,48 @@ def _open_window():
     raise WhatsAppError("WhatsApp didn't open. Is WhatsApp Desktop installed and signed in?")
 
 
-def _bring_to_front(w) -> None:
+def _bring_to_front(w, name: str = "WhatsApp") -> None:
     hwnd = w.handle
     if U32.IsIconic(hwnd):
         U32.ShowWindow(hwnd, 9)  # SW_RESTORE
-    for _ in range(3):
+    k32 = ctypes.windll.kernel32
+    for i in range(4):
         # Windows only lets the process that last received input change the foreground; a tap of Alt
         # (no other key) is the standard way to be allowed to
         U32.keybd_event(0x12, 0, 0, 0)
         U32.keybd_event(0x12, 0, 2, 0)
-        U32.SetForegroundWindow(hwnd)
+        if i == 0:
+            U32.SetForegroundWindow(hwnd)
+        else:
+            # still refused (it was on 4 Nov): share input with the window in front for a moment, which
+            # Windows does allow to hand over the foreground
+            fg_thread = U32.GetWindowThreadProcessId(U32.GetForegroundWindow(), None)
+            me = k32.GetCurrentThreadId()
+            attached = fg_thread and fg_thread != me and U32.AttachThreadInput(me, fg_thread, True)
+            try:
+                U32.ShowWindow(hwnd, 5)  # SW_SHOW
+                U32.BringWindowToTop(hwnd)
+                U32.SetForegroundWindow(hwnd)
+            finally:
+                if attached:
+                    U32.AttachThreadInput(me, fg_thread, False)
         time.sleep(0.3)
         if _is_front(w):
             return
-    raise WhatsAppError("I couldn't bring WhatsApp to the front, so I stopped rather than click anything.")
+    raise WhatsAppError(f"I couldn't bring {name} to the front, so I stopped rather than click anything.")
+
+
+def screen_locked() -> bool:
+    """True while Windows is locked (or at the sign-in screen): apps can't be driven then."""
+    try:
+        h = U32.OpenInputDesktop(0, False, 0x0100)  # DESKTOP_SWITCHDESKTOP
+        if not h:
+            return True
+        ok = U32.SwitchDesktop(h)  # switching to the desktop already in use: fails only when locked
+        U32.CloseDesktop(h)
+        return not ok
+    except Exception:
+        return False
 
 
 def _is_front(w) -> bool:

@@ -72,6 +72,9 @@ claude_code:
 files:
   search_roots: ["~"]        # where file search looks
 
+weather:
+  city: "Lahore"             # used when you ask about the weather without naming a place (Open-Meteo, no key)
+
 email:
   enabled: true              # connected with an app password
   poll_seconds: 60

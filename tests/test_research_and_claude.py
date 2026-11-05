@@ -231,6 +231,7 @@ def test_room_wake_does_not_cancel_a_whatsapp_command(monkeypatch, tmp_path):
     j._interrupt = lambda: called.append("interrupt")
     j._wake("voice")
     j._wake("barge-in")
+    j._wake("hotkey")                          # 4 Nov: a click on Jarvis cut off a ChatGPT research
     assert called == []
 
 

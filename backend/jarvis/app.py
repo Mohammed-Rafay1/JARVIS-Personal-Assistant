@@ -29,15 +29,18 @@ def help_text(sir: str, email: bool) -> str:
     """Spoken answer to "what can you do". Confident, but every claim is something Jarvis really does."""
     mail = " I read your inbox and draft and send your emails on your word." if email else ""
     return (f"At your service, {sir}. I command this laptop on your behalf. I open any application, file or folder, "
-            "search the web, and play your music on YouTube or Spotify. I put Claude Code to work on your projects, "
+            "find where your files are, research with ChatGPT or the web, tell you the weather, "
+            "and play your music on YouTube or Spotify. I put Claude Code to work on your projects, "
             "building features and writing and fixing code, and I brief you on where each project stands."
             f"{mail} I handle the volume, the maths and your questions. "
             "The full list is on your screen. Just tell me what you need.")
 # the on-screen version: every capability with phrases that work
 CAPABILITIES = [
     ("Apps & windows", ["Open Excel / VS Code / Teams", "Close Spotify", "Open Claude Code", "Lock the screen"]),
-    ("Files & folders", ["Open my Downloads folder", "Open the Q3 proposal PDF", "Find the budget spreadsheet"]),
-    ("Web", ["Search Google for Odoo 18 release notes", "Open YouTube on Chrome", "Go to github.com"]),
+    ("Files & folders", ["Open my Downloads folder", "Open flyer data.rar from my downloads",
+                         "Where is the budget spreadsheet?", "Open the Solvix folder on my desktop"]),
+    ("Web & research", ["Search Google for Odoo 18 release notes", "Research the history of Lahore on ChatGPT",
+                        "What's the weather in Lahore?", "Open YouTube on Chrome"]),
     ("Music & media", ["Play Tum Hi Ho on YouTube", "Play Dilruba on Spotify", "Play my liked songs",
                        "Pause · Next song · Volume 40 · Mute"]),
     ("Build & code (via Claude Code)", ["What's the status of my projects?", "How is the Solvix project going?",
@@ -62,6 +65,15 @@ _CLOSED_INTENTS = {"stop", "help", "ack", "tell_time", "set_volume", "media_cont
                    "play_spotify_liked", "email_ask_content", "whatsapp_ask", "calculate", "ask_song"}
 _THEN = re.compile(r"\s+(?:and then|then|and also|and)\s+(?=(?:open|launch|start|play|search|google|close|"
                    r"email|mute|unmute|set|turn|go to|lock|pause|check)\b)")
+# how long Jarvis waits for the answer to its own question (seconds); drafts waiting for "send it" last longer
+_PENDING_TTL = {"send_email": 900, "wa_send": 900, "claude_send": 600, "email_list": 600, "reply_list": 600,
+                "choose_file": 300, "choose_recipient": 300, "need_address": 300, "email_recipient": 300,
+                "email_content": 300, "wa_content": 300, "wa_recipient": 300, "reply_text": 300}
+# answers to Jarvis's own question that still count as a new command when they parse as one
+_WEAK = ("open_any", "open_file", "find_file")
+# "change it to ...", "ask it to ...": a reworded task, not a new command
+_REWORD = re.compile(r"^(?:no[\s,]+)?(?:change it to|make it|instead[\s,]|rather[\s,]|actually[\s,]+(?:ask|tell|make|have)|"
+                     r"ask it to|tell it to|have it|let it|i want it to|it should|get it to)\s*", re.I)
 
 
 class Jarvis:
@@ -73,7 +85,9 @@ class Jarvis:
         self.mode = "off"             # audio thread mode: off | wake | capture
         self.muted = False
         self._muted_in_call = False   # a mute pressed during a call lasts for that call only
-        self.pending: dict | None = None
+        self._pending: dict | None = None
+        self._pending_at = 0.0
+        self._last_question = ""      # the last question the language model answered ("search it" looks it up)
         self.history: deque[dict] = deque(maxlen=8)  # a shorter prompt answers faster on this CPU
         self._last_chat = 0.0
         self.follow_up = False
@@ -104,6 +118,23 @@ class Jarvis:
         self._barge_echo: list[float] = []
         self._barge_run = 0
         self._rethink_run = 0
+
+    # A question Jarvis asked ("which one?", "shall I send it?") waits for an answer, but not for ever:
+    # a stale one swallowed unrelated commands hours later.
+    @property
+    def pending(self) -> dict | None:
+        return self._pending
+
+    @pending.setter
+    def pending(self, value: dict | None) -> None:
+        self._pending = value
+        self._pending_at = time.monotonic()
+
+    def _expire_pending(self) -> None:
+        p = self._pending
+        if p and time.monotonic() - self._pending_at > _PENDING_TTL.get(p.get("kind", ""), 180):
+            log.info("follow-up %r expired", p.get("kind"))
+            self._pending = None
 
     # ------------------------------------------------------------------ startup
     def _status(self, msg: str, **extra) -> None:
@@ -421,10 +452,14 @@ class Jarvis:
         """'Hey Jarvis', the hotkey or a click: start a call, or (mid-call) cut in and listen."""
         if self.muted and source == "voice":
             return
-        if self._remote_said is not None and source in ("voice", "barge-in"):
-            # a command from your phone is running; a "Hey Jarvis" heard in the room (often a false one)
-            # must not cancel it or mix the laptop's greeting into your WhatsApp reply
+        if self._remote_said is not None:
+            # a command from your phone is running; a "Hey Jarvis" heard in the room (often a false one), or a
+            # click on Jarvis to see how it's going, must not cancel it or mix "Yes, sir?" into your WhatsApp
+            # reply (4 Nov: three ChatGPT researches were cut off this way)
             log.info("wake (%s) ignored: a WhatsApp command is in progress", source)
+            if source not in ("voice", "barge-in"):
+                self.ui.send({"type": "status", "text": "Working on your WhatsApp request. One moment…",
+                              "muted": self.muted})
             return
         log.info("wake (%s)", source)
         self._interrupt()
@@ -579,6 +614,9 @@ class Jarvis:
         from .tools.browser import resolve_site
         from .tools.files import match_folder
 
+        named_app = re.sub(r"\s+(?:app|application|desktop app)$", "", target)
+        if named_app != target and CTX.apps.find(named_app):  # "open ChatGPT app"
+            return Intent("open_app", {"name": named_app})
         if match_folder(target):
             return Intent("open_folder", {"name": target})
         aliases = {k.lower() for k in self.cfg["apps"]["aliases"]}
@@ -605,6 +643,7 @@ class Jarvis:
         if not t:  # just "Hey Jarvis" (e.g. said again mid-call): acknowledge and keep listening
             await self.say("Yes?", then_idle=True)
             return
+        self._expire_pending()
         if self.pending:
             handled = await self._handle_pending(t, text)
             if handled:
@@ -619,10 +658,9 @@ class Jarvis:
             from .tools.claude_code import list_projects
 
             projects = await asyncio.to_thread(list_projects, 12)
-            named = next((p for p in projects if re.search(r"\b" + re.escape(_project_words(p.cwd)) + r"\b",
-                                                           _project_words(t))), None)
+            named = _pick_project(t, [p.cwd for p in projects], cutoff=80)
             if named:
-                intents = [Intent("claude_project_status", {"project": named.cwd})]
+                intents = [Intent("claude_project_status", {"project": named})]
         if intents == [None] and not typed:
             tail = _embedded_command(t)
             if tail:  # "Take this, open WhatsApp": a misheard "Jarvis" in front of a clear command
@@ -694,6 +732,12 @@ class Jarvis:
                 continue
             if intent.tool == "ack":
                 results.append(Result(f"Loud and clear, {self.cfg['address_as']}. Go ahead."))
+                continue
+            if intent.tool == "search_last":  # "yes, search it": the question Jarvis just answered from memory
+                if self._last_question:
+                    results.append(await self.run_tool("web_research", {"query": self._last_question}))
+                else:
+                    results.append(Result("What should I look up? Say search, then the topic."))
                 continue
             results.append(await self.run_tool(intent.tool, intent.args))
         await self._deliver(results)
@@ -776,12 +820,10 @@ class Jarvis:
             return True
         if kind == "choose_project":  # "Which one would you like?" -> a number or a name
             self.pending = None
-            from .tools.claude_code import claude_project_status
-
             idx = parse_choice(t)
-            # a listed project named anywhere in the sentence ("tell me the status of Hackathon")
-            named = next((cwd for cwd in p["projects"]
-                          if re.search(r"\b" + re.escape(_project_words(cwd)) + r"\b", _project_words(t))), None)
+            # a listed project named anywhere in the sentence ("tell me the status of Hackathon"), even misheard
+            named = _pick_project(t, p["projects"])
+            other = parse(t)
             if idx is not None and (idx == -1 or idx <= len(p["projects"])):
                 target = p["projects"][idx - 1 if idx > 0 else -1]
             elif named:
@@ -789,16 +831,40 @@ class Jarvis:
             elif NO.match(t):
                 await self.say("Okay.", then_idle=True)
                 return True
-            elif parse(t) is not None and parse(t).tool not in ("open_any", "open_file", "ack"):
-                return False
+            elif other is not None and other.tool not in _WEAK:
+                return False  # a new command ("hello", "open ChatGPT"), not a project name
             else:
-                target = re.sub(r"^(?:the |my )?(.+?)(?: project| one)?$", r"\1", t)
+                from .tools.claude_code import find_project
+
+                hit = await asyncio.to_thread(find_project, t)
+                if hit is None:
+                    return False  # not one of the projects: treat it as a new request
+                target = hit.cwd
             self.ui.send({"type": "card", "kind": "clear"})
             await self._deliver([await self.run_tool("claude_project_status", {"project": target})])
             return True
         if kind in ("cc_project", "cc_new_name", "cc_chat"):
             return await self._claude_prompt_step(p, t, raw)
-        if kind == "claude_task":  # "What would you like Claude Code to do next?" -> the task, in your words
+        if kind == "claude_task_offer":  # "Would you like to give Claude Code a task in it?"
+            self.pending = None
+            from .tools.claude_code import prepare_task
+
+            m = re.match(r"^(?:(?:yes|yeah|yep|ok|okay|sure|please)[\s,]+)*(?:ask|tell|have|get|make) "
+                         r"(?:it|claude(?: code)?) to\s+(?P<task>.+)$", raw.strip(), re.I)
+            if m:  # "yes, ask it to add a login page"
+                await self._deliver([prepare_task(p["cwd"], p["name"], m.group("task").strip().rstrip("."),
+                                                  p.get("session", ""))])
+                return True
+            if YES.match(t):
+                self.pending = {**p, "kind": "claude_task"}
+                await self.say(f"What should Claude Code do in {re.sub(r'[-_]+', ' ', p['name'])}?",
+                               follow=True, then_idle=False)
+                return True
+            if NO.match(t):
+                await self.say("Okay.", then_idle=True)
+                return True
+            return False  # anything else is a new request
+        if kind == "claude_task":  # "What should Claude Code do?" -> the task, in your words
             self.pending = None
             if STOP.match(t):
                 return False  # "bye" still ends the call
@@ -806,7 +872,7 @@ class Jarvis:
                 await self.say("Understood. Standing by.", then_idle=True)
                 return True
             other = parse(t)
-            if other is not None and other.tool not in ("open_any", "open_file", "ack", "calculate"):
+            if other is not None and other.tool not in _WEAK + ("calculate",):
                 return False  # a different command, not a task for Claude Code
             from .tools.claude_code import prepare_task
 
@@ -821,11 +887,17 @@ class Jarvis:
                 self.ui.send({"type": "card", "kind": "clear"})
                 await self.say("Okay, not sent.", then_idle=True)
                 return True
-            if parse(t) is None:  # a reworded task
+            other = parse(t)
+            if _REWORD.match(raw.strip()) and (other is None or other.tool in _WEAK):  # "change it to ..."
                 from .tools.claude_code import prepare_task
 
-                await self._deliver([prepare_task(p["cwd"], p["name"], raw.strip().rstrip("."), p.get("session", ""))])
+                task = _REWORD.sub("", raw.strip(), count=1).strip().rstrip(".")
+                await self._deliver([prepare_task(p["cwd"], p["name"], task, p.get("session", ""))])
                 return True
+            # Anything else is a new request; the task is dropped, never re-asked in a loop ("No Jarvis,
+            # open ChatGPT app" was once read as a new task, again and again)
+            self.ui.send({"type": "card", "kind": "clear"})
+            log.info("claude code task dropped for a new request: %r", raw)
             return False
         if kind == "send_email":
             if YES.match(t):
@@ -949,6 +1021,18 @@ class Jarvis:
             if YES.match(t) and len(msgs) == 1:
                 await self._choose(1)
                 return True
+        if kind == "choose_file" and parse_choice(t) is None:  # "flyer data.rar is in Downloads. Open it?"
+            if re.search(r"\b(?:in (?:its|the) folder|in explorer|its location|where it is|containing folder)\b"
+                         r"|^(?:yes |ok |okay )?show(?: it| me)?(?: to me)?$", t):
+                self.pending = None
+                from .tools.files import reveal_path
+
+                await self._deliver([reveal_path(p["paths"][0])])
+                return True
+            if YES.match(t) or re.match(r"^(?:yes |ok |okay |sure )?open(?: it| that| the file| the folder| this)?"
+                                        r"(?: please| now)?$", t):
+                await self._choose(1)
+                return True
         if kind in ("choose_file", "choose_recipient", "email_list", "reply_list"):
             idx = parse_choice(t)
             if kind == "email_list" and idx is None:
@@ -1069,10 +1153,12 @@ class Jarvis:
             self.ui.send({"type": "card", "kind": "clear"})
             await self.say("Okay, nothing sent to Claude Code.", then_idle=True)
             return True
+        other = parse(t)
+        is_new_command = other is not None and other.tool not in _WEAK and not parse_choice(t)
         if kind == "cc_project":
             projects = p["projects"]
             idx = parse_choice(t)
-            if re.search(r"\bnew\b", t) or idx == len(projects) + 1:
+            if re.search(r"\bnew (?:project|one|folder)\b|^new$", t) or idx == len(projects) + 1:
                 self.pending = {"kind": "cc_new_name", "task": p["task"]}
                 await self.say("What should I call the new project?", follow=True, then_idle=False)
                 return True
@@ -1082,9 +1168,17 @@ class Jarvis:
             elif re.search(r"\b(?:same|last|previous) (?:one|project)\b|^same$", t) and self._cc_last:
                 pick = next((q for q in projects if q[0] == self._cc_last[0]), None)
             else:
-                pick = next((q for q in projects if _project_words(q[0]) and
-                             re.search(r"\b" + re.escape(_project_words(q[0])) + r"\b", _project_words(t))), None)
+                cwd = _pick_project(t, [q[0] for q in projects])
+                pick = next((q for q in projects if q[0] == cwd), None)
             if pick is None:
+                if is_new_command:
+                    self.pending = None
+                    return False  # a new request, not a project: drop the prompt
+                if p.get("asked"):  # asked once already: let it go rather than loop
+                    self.pending = None
+                    await self.say("Okay, I've left the Claude Code prompt for now.", then_idle=True)
+                    return True
+                self.pending = {**p, "asked": True}
                 await self.say("Which one? Say its number, its name, or new project.", follow=True, then_idle=False)
                 return True
             self.ui.send({"type": "card", "kind": "clear"})
@@ -1116,6 +1210,14 @@ class Jarvis:
                 or idx == 1 or YES.match(t):
             session = p["session"]
         else:
+            if is_new_command:
+                self.pending = None
+                return False
+            if p.get("asked"):
+                self.pending = None
+                await self.say("Okay, I've left the Claude Code prompt for now.", then_idle=True)
+                return True
+            self.pending = {**p, "asked": True}
             await self.say("Continue the latest chat, or a new chat?", follow=True, then_idle=False)
             return True
         self.pending = None
@@ -1227,6 +1329,7 @@ class Jarvis:
             await self.say(f"Sorry, {self.cfg['address_as']}, I didn't get that command. Could you say it "
                            "another way? For example, open Spotify.", then_idle=True)
             return
+        self._last_question = text  # "yes, search it" after the answer looks this up on the web
         c = self.cfg["llm"]
         # Never "think" forever: a stuck or overloaded model once left the call on "thinking" for a minute
         # the tool list adds ~700 prompt tokens, which take this CPU another ~15 s to read
@@ -1530,6 +1633,23 @@ def _project_words(text: str) -> str:
     """'C:\\Users\\me\\Desktop\\ocm _system' -> 'ocm system'; 'the P9-Construct one' -> 'the p9 construct one'."""
     name = re.split(r"[\\/]", text.rstrip("\\/"))[-1]
     return re.sub(r"\s+", " ", re.sub(r"[-_]+", " ", name.lower())).strip()
+
+
+def _pick_project(t: str, cwds: list[str], cutoff: int = 70) -> str | None:
+    """The project named in what was said: exactly, or as Whisper misheard it ("Blonnie Mona", "Hulani Mono"
+    for Polani mono, 4 Nov)."""
+    from .tools.claude_code import name_score, project_query
+
+    said = _project_words(t)
+    for cwd in cwds:
+        w = _project_words(cwd)
+        if w and re.search(r"\b" + re.escape(w) + r"\b", said):
+            return cwd
+    q = project_query(t)
+    if not q:
+        return None
+    score, cwd = max(((name_score(q, _project_words(c)), c) for c in cwds), default=(0, None))
+    return cwd if score >= cutoff else None
 
 
 def _greeting_lines(sir: str) -> str:

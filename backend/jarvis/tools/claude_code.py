@@ -117,13 +117,55 @@ def list_projects(limit: int = 6) -> list[Project]:
     return sorted(found.values(), key=lambda p: p.updated, reverse=True)[:limit]
 
 
+_PROJECT_FILLER = re.compile(
+    r"\b(?:tell me|let me know|give me|show me|what is|what's|how is|how's|i said|i mean|please|about|the|status|"
+    r"state|progress|update|updates|of|on|for|with|my|project|projects|in|claude|code|going|doing|latest|one|is|"
+    r"it|and|that|this|named|called)\b")
+
+
+def project_query(text: str) -> str:
+    """"tell me about Blonnie Mona" -> "blonnie mona": only the words that could be the name."""
+    t = re.sub(r"[^\w\s]", " ", re.sub(r"[-_]+", " ", text.lower()))
+    return re.sub(r"\s+", " ", _PROJECT_FILLER.sub(" ", t)).strip()
+
+
+def _sound(text: str) -> str:
+    """A rough sound of a name: the consonants, with the ones Whisper swaps merged ("blonnie mona" and
+    "polani mono" both -> "pln mn")."""
+    t = re.sub(r"[^a-z ]", "", text.lower())
+    for a, b in (("ph", "f"), ("ck", "k"), ("b", "p"), ("d", "t"), ("g", "k"), ("v", "f"), ("z", "s"), ("q", "k"),
+                 ("c", "k"), ("w", ""), ("h", ""), ("y", "")):
+        t = t.replace(a, b)
+    words = [re.sub(r"(.)\1+", r"\1", re.sub(r"[aeiou]", "", w)) for w in t.split()]
+    return " ".join(w for w in words if w)
+
+
+def name_score(said: str, name: str) -> float:
+    """How close a heard name is to a project's name, by spelling or by sound (0-100)."""
+    said, name = said.lower().strip(), re.sub(r"[-_\s]+", " ", name.lower()).strip()
+    s = fuzz.ratio(said, name)
+    a, b = _sound(said), _sound(name)
+    if len(a.replace(" ", "")) >= 3 and len(b.replace(" ", "")) >= 3:
+        s = max(s, fuzz.ratio(a, b) - 5)  # sound alone is a little weaker evidence than spelling
+    return s
+
+
 def find_project(name: str) -> Project | None:
     projects = list_projects(12)
     if not projects:
         return None
-    # name, session title and folder path, so "hackathon" finds the project living in Desktop\Hackathon\...
+    if re.search(r"[\\/]", name):  # a folder path from the project list
+        hit = next((p for p in projects if p.cwd.lower() == name.lower()), None)
+        if hit:
+            return hit
+    q = project_query(name) or name.lower()
+    # the name as heard: close to a project's folder name ("pulani mono", "hulani mono" -> Polani mono)
+    score, best = max(((name_score(q, p.name), p) for p in projects), key=lambda x: x[0])
+    if score >= 70:
+        return best
+    # or in its session title or folder path, so "hackathon" finds the project living in Desktop\Hackathon\...
     labels = {f"{p.name} {p.title} {p.cwd}".lower().replace("-", " "): p for p in projects}
-    hit = process.extractOne(name.lower(), list(labels), scorer=fuzz.partial_ratio, score_cutoff=70)
+    hit = process.extractOne(q, list(labels), scorer=fuzz.partial_ratio, score_cutoff=75)
     return labels[hit[0]] if hit else None
 
 
@@ -218,8 +260,11 @@ async def claude_project_status(project: str) -> Result:
             "last_prompt": p.last_prompt, "recent": [_first_sentence(u) for u in p.updates[-3:]][::-1]}
     head = f"{_spoken_name(p)}, last active {_ago(p.updated)}. {summary}"
     if tasks_allowed():
-        return Result(f"{head} I'm standing by. What would you like Claude Code to do next?", icon="code", card=card,
-                      pending={"kind": "claude_task", "cwd": p.cwd, "name": p.name, "session": p.session.stem})
+        # a yes/no question, not "what next?": the next thing said was once taken as a task even when it was
+        # a new command ("open ChatGPT" became a prompt for Claude Code, 4 Nov)
+        return Result(f"{head} Would you like to give Claude Code a task in it?", icon="code", card=card,
+                      pending={"kind": "claude_task_offer", "cwd": p.cwd, "name": p.name,
+                               "session": p.session.stem})
     # read-only: offer the other projects instead of a task
     others = [q.cwd for q in await asyncio.to_thread(list_projects, 6)]
     return Result(f"{head} Would you like the status of another project?", icon="code", card=card,
