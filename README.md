@@ -90,7 +90,7 @@ Add `-Remove` to that command to undo it.
 
 ### Tune "Hey Jarvis" to your voice (recommended, 1 minute)
 
-Double-click **`calibrate_wake.bat`** in a quiet room and follow the prompts. It sets the mic level and how sensitive the wake word is, then restarts Jarvis. Do this again if Jarvis often misses you or wakes up by accident.
+Double-click **`calibrate_wake.bat`** and follow the prompts (6-8 minutes). Part 1 is in a quiet room, part 2 with background noise (music or a video playing); in each you say "Hey Jarvis" in a low, normal and loud voice, and read a sentence without it. From that it sets the mic boost and the wake thresholds, and trains a small model of **your own** "Hey Jarvis" so a quiet or noisy call still wakes it while videos and other people don't. The recordings stay on the laptop (`dataoice`). Jarvis restarts with the new settings. Run it again whenever it starts missing you or waking by accident, for example after changing rooms or microphones.
 
 ### Settings: `config.yaml`
 

@@ -285,9 +285,13 @@ class Jarvis:
             self._status("Loading wake word…")
             try:
                 from .audio.wakeword import WakeWord
+                from .config import ROOT
 
-                self.wake = WakeWord(c["wake_word"]["model"], c["wake_word"]["threshold"])
-                health["wake"] = "hey jarvis"
+                w = c["wake_word"]
+                mine = w.get("verifier") or ""
+                self.wake = WakeWord(w["model"], w["threshold"], str(ROOT / mine) if mine else "",
+                                     float(w.get("verifier_trigger", 0.05)))
+                health["wake"] = "hey jarvis (your voice)" if self.wake.personal else "hey jarvis"
             except Exception as e:
                 log.exception("wake word unavailable")
                 health["wake"] = f"off ({e.__class__.__name__})"
