@@ -128,7 +128,7 @@ def _is_conversation(raw: str, t: str) -> bool:
 _CLOSED_INTENTS = {"stop", "help", "ack", "tell_time", "set_volume", "media_control", "lock_screen", "sleep_pc",
                    "claude_projects", "check_email", "emails_to_reply", "close_app", "open_any", "open_website",
                    "play_spotify_liked", "email_ask_content", "whatsapp_ask", "calculate", "ask_song",
-                   "office_open", "office_save", "office_undo"}
+                   "office_open", "office_save", "office_undo", "play_it"}
 # "close excel", "close the file": the Excel / Word file Jarvis is working on (it asks to save first)
 _OFFICE_CLOSE = re.compile(r"(?:microsoft |ms )?(?:excel|word)|(?:the |this |that )?(?:file|sheet|spreadsheet|"
                            r"workbook|document|doc|excel file|word file|it|this|that)")
@@ -170,6 +170,7 @@ class Jarvis:
         self.history: deque[dict] = deque()
         self._last_chat = 0.0
         self._said: list[str] = []    # what Jarvis has said since you last spoke ("What?" repeats it)
+        self._last_play: dict | None = None   # the last song asked for, so "start it" can retry it
         self._last_reply = ""
         self.follow_up = False
         self.speak_aloud = True
@@ -179,6 +180,8 @@ class Jarvis:
         self.llm = None
         self._preroll: deque[np.ndarray] = deque(maxlen=8)
         self._wake_ring: deque[np.ndarray] = deque(maxlen=30)  # the last 2.4 s, to check a weak wake
+        self._verify_wait = 0          # frames to wait before checking a weak wake (the end of "Jarvis")
+        self._verify_score = 0.0
         self._heard: list[np.ndarray] = []   # frames of the utterance being recognised right now
         self._recognising = False
         self._heard_conf = 0.0          # recogniser confidence of the last spoken request
@@ -411,21 +414,30 @@ class Jarvis:
                     self._barge_echo, self._barge_run = [], 0
                 if self.wake is None:
                     continue
+                if self._verify_wait:  # a weak wake: the rest of "Jarvis" has arrived, check the clip now
+                    self._verify_wait -= 1
+                    if self._verify_wait == 0:
+                        clip = np.concatenate(list(self._wake_ring)).astype(np.float32) / 32768.0
+                        self.loop.call_soon_threadsafe(
+                            lambda a=clip, s=self._verify_score: asyncio.ensure_future(self._verify_wake(a, s)))
                 thr = self.cfg["wake_word"]["threshold_while_speaking"] if speaking else None
                 if self.wake.process(frame, thr):
                     pre = list(self._preroll)[-3:]
                     self.wake_vad.reset()
                     sure = float(self.cfg["wake_word"].get("verify_below", 0.5))
                     if speaking or self.in_call or self.wake.last_score >= sure:
+                        self._verify_wait, self._wake_verifying = 0, False
                         self.loop.call_soon_threadsafe(lambda p=pre: self._wake("voice", p))
+                    elif self._verify_wait:
+                        self._verify_score = max(self._verify_score, self.wake.last_score)
                     elif not self._wake_verifying:
                         # 3 Nov: a video playing on the laptop scored 0.18-0.20 and kept opening Jarvis.
-                        # A weak score only wakes it if Whisper hears "Jarvis" in the last two seconds.
+                        # A weak score only wakes it if Whisper hears "Jarvis" in the clip.
                         # (Its own flag: sharing the backup check's flag dropped real calls at 23:48.)
+                        # 6 Nov: the clip was cut the instant the model fired, often mid-"Jarvis", and
+                        # Whisper heard nothing (even at 0.36): wait ~0.6 s for the end of the word first.
                         self._wake_verifying = True
-                        clip = np.concatenate(list(self._wake_ring)).astype(np.float32) / 32768.0
-                        self.loop.call_soon_threadsafe(
-                            lambda a=clip, s=self.wake.last_score: asyncio.ensure_future(self._verify_wake(a, s)))
+                        self._verify_wait, self._verify_score = 7, self.wake.last_score
                 elif not speaking and not self.in_call and self.cfg["wake_word"].get("whisper_backup", True):
                     self._backup_wake_feed(frame)
             elif self.mode == "capture":
@@ -502,10 +514,19 @@ class Jarvis:
             text = await asyncio.to_thread(self.stt.quick, audio, 3.0)  # wait out a backup check
         finally:
             self._wake_verifying = False
-        if not mentions_wake(text or "") or self.in_call or self.state != "idle" or self.muted:
-            log.info("wake rejected (score %.2f): heard %r", score, (text or "").strip()[:60])
+        heard = (text or "").strip()
+        if self.in_call or self.state != "idle" or self.muted:
             return
-        log.info("wake confirmed (score %.2f): %r", score, text)
+        if not mentions_wake(heard):
+            # Nothing recognisable at all, but the wake model was fairly sure: that's a quiet or clipped
+            # "Hey Jarvis", not a video (a video's words come back as words, and those are still refused)
+            lenient = float(self.cfg["wake_word"].get("accept_unheard_above", 0.25))
+            if heard or score < lenient:
+                log.info("wake rejected (score %.2f): heard %r", score, heard[:60])
+                return
+            log.info("wake accepted (score %.2f): nothing else heard", score)
+        else:
+            log.info("wake confirmed (score %.2f): %r", score, text)
         self._wake("voice")
 
     async def _wake_from_text(self, audio: np.ndarray) -> None:
@@ -545,6 +566,7 @@ class Jarvis:
         """'Hey Jarvis', the hotkey or a click: start a call, or (mid-call) cut in and listen."""
         if self.muted and source == "voice":
             return
+        self._verify_wait = 0  # a weak wake still waiting to be checked is moot now
         if self._remote_said is not None:
             # a command from your phone is running; a "Hey Jarvis" heard in the room (often a false one), or a
             # click on Jarvis to see how it's going, must not cancel it or mix "Yes, sir?" into your WhatsApp
@@ -806,6 +828,9 @@ class Jarvis:
             if intent.tool == "say":  # a fixed answer, e.g. something Jarvis can't do yet
                 results.append(Result(intent.args["text"]))
                 continue
+            if intent.tool == "play_it":
+                results.append(await self._play_it())
+                continue
             if intent.tool == "office_open":  # Excel / Word: new or existing, then edits in plain words
                 results.append(await self._office_open(intent.args["app"], intent.args.get("mode", ""),
                                                        intent.args.get("query", "")))
@@ -895,12 +920,23 @@ class Jarvis:
             self.ui.send({"type": "call", "value": "mini"})
             await asyncio.sleep(0.4)
         try:
-            return await t.func(**{k: v for k, v in args.items() if k in t.params})
+            result = await t.func(**{k: v for k, v in args.items() if k in t.params})
         except asyncio.CancelledError:
             raise
         except Exception as e:
             log.exception("tool %s failed", name)
-            return Result(f"That didn't work: {str(e)[:80]}.", ok=False)
+            result = Result(f"That didn't work: {str(e)[:80]}.", ok=False)
+        if name in ("play_spotify", "play_youtube", "play_spotify_liked"):  # "start it" means this one
+            self._last_play = {"tool": name, "args": dict(args), "ok": result.ok, "at": time.monotonic()}
+        return result
+
+    async def _play_it(self) -> Result:
+        """'Start it' / 'play it': the song that didn't start a moment ago, else press play."""
+        lp = self._last_play
+        if lp and not lp["ok"] and time.monotonic() - lp["at"] < 600:
+            log.info("play it: trying %s %s again", lp["tool"], lp["args"])
+            return await self.run_tool(lp["tool"], lp["args"])
+        return await self.run_tool("media_control", {"action": "play_pause"})
 
     async def _deliver(self, results: list[Result]) -> None:
         for r in results:

@@ -318,6 +318,26 @@ def _texting(t: str) -> Intent | None:
     return Intent("whatsapp_ask", {"contact": to, "message": msg})
 
 
+_PLAY_IT = re.compile(
+    r"^(?:please )?(?:play|resume|continue|put on) (?:it|that|this)(?: now| again| please)?$"
+    r"|^(?:please )?(?:start|restart|press play on|hit play on) (?:it|that|this|the song|the music|the track|"
+    r"the video|that song|this song)(?: now| again| please)?$"
+    r"|^(?:press|hit|click) play$|^start playing$")  # "play that song" still asks which song
+
+
+def _email_period(t: str) -> str:
+    """'past 24 hours' / 'yesterday' / 'this week' / 'unread' -> the inbox period to check."""
+    if re.search(r"\b(?:past|last) (?:24|twenty[- ]four) hours?\b|\b(?:past|last) day\b", t):
+        return "24h"
+    if re.search(r"\byesterday\b", t):
+        return "yesterday"
+    if re.search(r"\b(?:this week|recently|lately|recent|(?:past|last) (?:few|couple of|2|two|3|three) days)\b", t):
+        return "recent"
+    if re.search(r"\b(?:unread|new)\b", t):
+        return "unread"
+    return "today"
+
+
 def _email(t: str) -> Intent | None:
     # "which emails do I need to reply to", "any emails I have to answer", "what's waiting for my reply"
     if len(t.split()) <= 14 and (
@@ -347,28 +367,23 @@ def _email(t: str) -> Intent | None:
     if m:  # recipient but no message yet: ask what to say
         return Intent("email_ask_content", {"to": m.group("to")})
     # "what emails have I received", "tell me about my emails", "read my emails", "what did I get today"
-    if short and not re.match(r"^(?:read|summari[sz]e|open)\b", t) and not re.search(r"\bfrom \w", t) \
+    if short and not re.match(r"^(?:read|summari[sz]e|open)\b", t) \
+            and not re.search(r"\bfrom (?!yesterday|today|this|the last|the past|last|past)\w", t) \
             and re.search(r"\b(?:e-?mails?|mails?|inbox)\b", t) and re.search(
             r"\b(?:received|receive|got|get|getting|came|come|arrived|new|unread|today|tell me|show|read|list|"
-            r"what|which|any|latest|recent|check|see)\b", t):
-        period = "unread" if re.search(r"\b(?:unread|new)\b", t) else "today"
-        if re.search(r"\b(?:this week|recently|lately|recent)\b", t):
-            period = "recent"
-        return Intent("check_email", {"period": period})
+            r"what|which|any|latest|recent|check|see|yesterday|past|last|hours?|week)\b", t):
+        return Intent("check_email", {"period": _email_period(t)})
     if re.search(r"\b(?:who(?:'s| has| have)? (?:e-?mailed|mailed|sent me|written)|anyone (?:e-?mail|mail)|"
                  r"any (?:new |unread )?(?:e-?mails?|mails?|messages in my inbox)|check (?:my |the )?(?:e-?mails?|mail|inbox)|"
                  r"do i have (?:any )?(?:new |unread )?(?:e-?mails?|mail)|what(?:'s| is) in my inbox|"
                  r"how many (?:new |unread )?(?:e-?mails|mails)|(?:new|unread) (?:e-?mails|mail)|my inbox)\b", t):
-        period = "unread" if re.search(r"\b(?:unread|new)\b", t) else "today"
-        if re.search(r"\b(?:this week|recently|lately)\b", t):
-            period = "recent"
-        return Intent("check_email", {"period": period})
+        return Intent("check_email", {"period": _email_period(t)})
     # "every Cheamills I have received in past 24 hours": the word "emails" misheard, but nothing else
     # Jarvis reads arrives like that (WhatsApp reading isn't supported and says so before this)
     if short and re.search(r"\b(?:i have|i've|have i|did i|i) (?:received|got)\b", t) \
             and re.search(r"\b(?:what|which|every|any|all|anything|tell me|show|list)\b", t) \
             and re.search(r"\b(?:today|yesterday|this morning|(?:past|last) \d+ hours?|(?:past|last) (?:day|hour))\b", t):
-        return Intent("check_email", {"period": "today"})
+        return Intent("check_email", {"period": _email_period(t)})
     m = re.match(r"^(?:read|summari[sz]e|open)(?: me)?(?: the| my)? (?:latest|last|newest|most recent|recent|new)? ?"
                  r"(?:e-?mail|mail|message)(?: from (?P<who>.+))?$", t) \
         or re.match(r"^what did (?P<who>.+?) (?:say|send|e-?mail|write)(?: me)?(?: about)?$", t)
@@ -655,6 +670,11 @@ def _open(t: str, resolve_open: Callable[[str, str], Intent] | None) -> Intent |
         return None
     target = re.sub(r"^(?:the|my|a|an|up)\s+", "", m.group("target")).strip()
     verb = m.group("verb")
+    if re.fullmatch(r"(?:it|this|that|them|those|these|one|this one|that one|it now|it please)", target):
+        # 6 Nov, WhatsApp: "Start it" (the song Spotify couldn't start) opened "Antigravity IDE"
+        if verb in ("start", "run"):
+            return Intent("play_it")
+        return Intent("say", {"text": "Open what? Tell me the app, file, folder or website."})
     # "open flyer data.rar file from my downloads", "open folder Solvix on desktop", "open the Solvix folder"
     if _LOC.search(target) or _EXT.search(target) or re.match(r"^" + _FOLDERISH + r"s? ", target) \
             or re.search(r"\s" + _FOLDERISH + r"$", target):
@@ -717,6 +737,8 @@ def _parse(text: str, default_service: str = "youtube",
         return Intent("stop")
     if _ACK.match(t):
         return Intent("ack")
+    if _PLAY_IT.match(t):  # "start it", "play it", "press play": the song just asked for, or resume
+        return Intent("play_it")
     if t.startswith("listen to "):
         from rapidfuzz import fuzz
 

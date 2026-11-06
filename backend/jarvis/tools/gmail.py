@@ -459,23 +459,30 @@ async def draft_email(to: str, about: str) -> Result:
     return await make_draft(matches[0][0], matches[0][1], about)
 
 
-@tool("Check the inbox: who emailed recently", period="today | unread | recent")
+_PERIOD_QUERY = {"unread": "in:inbox is:unread", "recent": "in:inbox newer_than:3d",
+                 "yesterday": "in:inbox newer_than:2d older_than:1d", "24h": "in:inbox newer_than:1d"}
+_PERIOD_SAID = {"today": " today", "24h": " in the last 24 hours", "yesterday": " yesterday",
+                "recent": " in the last few days"}
+
+
+@tool("Check the inbox: who emailed recently", period="today | 24h | yesterday | unread | recent")
 async def check_email(period: str = "today") -> Result:
     if CTX.gmail is None:
         return Result(_not_connected(), ok=False, icon="mail")
-    q = {"unread": "in:inbox is:unread", "recent": "in:inbox newer_than:3d"}.get(period, "in:inbox newer_than:1d")
+    q = _PERIOD_QUERY.get(period, "in:inbox newer_than:1d")
     if CTX.cfg.get("email", {}).get("only_primary", True):
         q += " category:primary"
     msgs = await asyncio.to_thread(CTX.gmail.search, q, 15)
     if not msgs:
-        return Result("Nothing new in your inbox." if period != "today" else "No emails today.", icon="mail")
+        return Result("Nothing new in your inbox." if period == "unread" else
+                      f"No emails{_PERIOD_SAID.get(period, ' today')}.", icon="mail")
     senders: dict[str, int] = {}
     for m in msgs:
         senders[m["from_name"]] = senders.get(m["from_name"], 0) + 1
     top = list(senders.items())[:4]
     parts = [f"{n}{' (' + str(c) + ')' if c > 1 else ''}" for n, c in top]
     more = f" and {len(senders) - 4} others" if len(senders) > 4 else ""
-    say = f"{len(msgs)} email{'s' if len(msgs) != 1 else ''}{' today' if period == 'today' else ''}, from {', '.join(parts)}{more}."
+    say = f"{len(msgs)} email{'s' if len(msgs) != 1 else ''}{_PERIOD_SAID.get(period, '')}, from {', '.join(parts)}{more}."
     card = {"kind": "email_list", "items": [{"from": m["from_name"], "subject": m["subject"], "id": m["id"]}
                                             for m in msgs[:8]]}
     return Result(say, icon="mail", card=card, pending={"kind": "email_list", "messages": msgs})

@@ -51,6 +51,8 @@ class AppIndex:
 
     def find(self, query: str) -> tuple[str, str] | None:
         q = query.lower().strip()
+        if len(q) < 3 or q in {"it", "this", "that", "them", "one", "the", "app", "song", "music", "file"}:
+            return None  # 6 Nov: "start it" fuzzy-matched "Antigravity IDE"
         aliases = {k.lower(): v for k, v in CTX.cfg.get("apps", {}).get("aliases", {}).items()}
         if q in aliases:
             target = aliases[q]

@@ -92,15 +92,18 @@ def _open_and_press(uri: str, pick) -> str | None:
     _ensure_running()
     before = now_playing()
     os.startfile(uri)
-    deadline = time.monotonic() + 12
-    focused = False
+    # 6 Nov: Spotify opened 24 s earlier was still loading, the results never showed within 12 s and the
+    # song didn't start; the same request worked a minute later. Keep re-focusing (a hidden or covered
+    # Chromium window doesn't render its results), open the search again once, and allow 20 s.
+    start = time.monotonic()
+    deadline, focused_at, reopened = start + 20, 0.0, False
     while time.monotonic() < deadline:
         time.sleep(0.8)
         win = _main_window()
         if win is None:
             continue
-        if not focused:  # a hidden/covered Chromium window doesn't render its search results
-            focused = True
+        if time.monotonic() - focused_at > 4:
+            focused_at = time.monotonic()
             try:
                 if win.is_minimized():
                     win.restore()
@@ -109,6 +112,10 @@ def _open_and_press(uri: str, pick) -> str | None:
                 log.debug("spotify focus: %s", e)
         btn = pick(win)
         if btn is None:
+            if not reopened and time.monotonic() - start > 9:
+                reopened = True
+                log.info("spotify: no results yet, opening the search again")
+                os.startfile(uri)
             continue
         log.info("spotify: pressing %r", btn.window_text())
         try:
