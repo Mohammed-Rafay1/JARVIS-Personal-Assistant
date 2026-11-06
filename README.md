@@ -100,6 +100,7 @@ Open `config.yaml` in any text editor, change what you like, save, and restart J
 |---|---|
 | `address_as` | How Jarvis addresses you: `"sir"`, `"boss"`, your name… |
 | `weather.city` | Your city, for "what's the weather?" |
+| `office.save_folder` | Where new Excel and Word files are saved (default: Documents) |
 | `music.default_service` | `youtube` or `spotify`, for "play X" with no service named |
 | `hotkey` | The talk-or-type shortcut (default `Control+Alt+J`) |
 | `wake_word.threshold` | Lower (0.1) if it misses you, higher (0.5) if it wakes by accident. `calibrate_wake.bat` sets it for you. |
@@ -162,8 +163,9 @@ Set `claude_code.background: false` to open a visible terminal instead (where yo
 
 | | Examples |
 |---|---|
-| Apps | "Open Excel", "Launch VS Code", "Close Spotify" (the app still asks to save your work) |
-| Files & folders | "Open my Downloads folder", "Open flyer data.rar from my downloads", "Where is the budget spreadsheet?", "Open the Solvix folder on my desktop", then "open it" or "show it in its folder" |
+| Apps | "Launch VS Code", "Close Spotify" (the app still asks to save your work) |
+| Files & folders | "Open my Downloads folder", "Open flyer data.rar from my downloads", "Where is the budget spreadsheet?", "Open the Solvix folder on my desktop", then "open it" or "show it in its folder"; "Close the Design folder", "Close the folder", "Close all folders" |
+| Excel & Word | "Open Excel" → "new" or "existing" (then its name); "Open a blank sheet in Excel", "Create a new Word document", "Open my budget Excel file". Then say what to do: "Add headings Name, Age and Salary", "Add a row with Ali, 30, 50000", "Write 500 in B2", "Make row 1 bold", "Total column C", "Make a chart", "Add a title Monthly Report", "Type Dear Sir,", "Replace Friday with Monday". Bigger requests ("make a table of monthly sales for six months", "write a leave letter for Friday") take the local model about half a minute. "Undo" takes back the last change. "Save it" asks the name for a new file (saved in Documents); "close it" asks whether to save first. |
 | Web & research | "Search Google for Odoo 18 release notes", "Research the history of Lahore on ChatGPT", "Who was Alan Turing on Claude", "Go to github.com" |
 | Weather | "What's the weather?", "Will it rain tomorrow?", "Temperature in Dubai" |
 | YouTube | "Play Arijit Singh latest song on YouTube", "Play lofi beats video" |

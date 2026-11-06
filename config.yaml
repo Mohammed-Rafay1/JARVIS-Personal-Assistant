@@ -88,6 +88,9 @@ files:
 weather:
   city: "Lahore"             # used when you ask about the weather without naming a place (Open-Meteo, no key)
 
+office:
+  save_folder: "~/Documents" # where new Excel and Word files go when you say "save it" and give a name
+
 email:
   enabled: true              # connected with an app password
   poll_seconds: 60

@@ -50,7 +50,8 @@ def system_prompt(address_as: str) -> str:
         "- You cannot send email yourself; draft_email shows a draft that the user confirms.\n"
         "- Never make up live facts: weather, news, prices, scores, or anything after your training. For those "
         "say you can look it up (the user can say \"search it\").\n"
-        "- What you can do: open apps, files, folders and websites; find where a file is; web search and "
+        "- What you can do: open apps, files, folders and websites; close apps and folder windows; create and edit "
+        "Excel and Word files by voice and save them under a name the user gives; find where a file is; web search and "
         "research with ChatGPT or Claude; weather; play music on YouTube or "
         "Spotify; volume and playback; Claude Code (project status, and giving a project a task that you read "
         "back and send once the user confirms; they just say, for example, 'give prompt in Solvix to fix the "
@@ -206,10 +207,19 @@ class LLM:
         r.raise_for_status()
         return r.json()["message"]["content"].strip()
 
-    async def json(self, system: str, user: str) -> dict:
+    async def json_text(self, system: str, user: str, max_tokens: int = 300, timeout: float = 60) -> str:
+        """The model's JSON reply as text, for callers that can use a reply cut off at the length limit."""
         body = {"model": self.model, "stream": False, "format": "json", "keep_alive": self.keep_alive,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                "options": {**self._opts(), "num_predict": 300}}
-        r = await self.client.post(f"{self.host}/api/chat", json=body)
+                "options": {**self._opts(), "temperature": 0.2, "num_predict": max_tokens}}
+        r = await self.client.post(f"{self.host}/api/chat", json=body, timeout=timeout)
+        r.raise_for_status()
+        return r.json()["message"]["content"]
+
+    async def json(self, system: str, user: str, max_tokens: int = 300, timeout: float = 60) -> dict:
+        body = {"model": self.model, "stream": False, "format": "json", "keep_alive": self.keep_alive,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "options": {**self._opts(), "num_predict": max_tokens}}
+        r = await self.client.post(f"{self.host}/api/chat", json=body, timeout=timeout)
         r.raise_for_status()
         return json.loads(r.json()["message"]["content"])

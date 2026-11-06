@@ -449,6 +449,53 @@ def _prompt_request(t: str) -> Intent | None:
     return Intent("claude_code_task", args)
 
 
+_OFFICE_APP = r"(?:microsoft |ms )?(?P<app>excel|word)"
+_EXCEL_THING = r"(?:excel )?(?:file|sheet|spreadsheet|workbook)|excel"
+_WORD_THING = r"(?:word )?(?:file|document|doc)|word"
+_FRESH = r"(?:new|blank|empty|fresh)"
+
+
+def _office_app(words: str) -> str:
+    return "excel" if re.search(r"\b(?:excel|sheet|spreadsheet|workbook)\b", words) else \
+        "word" if re.search(r"\b(?:word|document|doc)\b", words) else ""
+
+
+def _office(t: str) -> Intent | None:
+    """Excel and Word files to work on (5 Nov): "open Excel" asks new or existing; "open a blank sheet in Excel",
+    "create a new Word document" start one; "open my budget Excel file" opens that one to edit; "save it (as X)",
+    "close the file", "undo" act on the file being worked on."""
+    m = re.match(rf"^(?:open|launch|start|run|bring up|load)(?: up)?(?: the)? {_OFFICE_APP}(?: app| application)?$", t)
+    if m:
+        return Intent("office_open", {"app": m.group("app"), "mode": ""})
+    m = re.match(rf"^(?:open|create|make|start|give me|get me|i want|i need|new|add)(?: me)?(?: up)?(?: a| an| the)?"
+                 rf"(?: {_FRESH})?(?: {_OFFICE_APP})?(?: (?P<thing>file|sheet|spreadsheet|workbook|document|doc))?"
+                 rf"(?: (?:in|on|with|using) {_OFFICE_APP.replace('app>', 'app2>')})?$", t)
+    if m and re.search(rf"\b{_FRESH}\b|^(?:create|make|new|give me|get me|i want|i need|add)\b", t):
+        app = _office_app(t)
+        if app and (m.group("thing") or m.group("app") or m.group("app2")):
+            return Intent("office_open", {"app": app, "mode": "new"})
+    m = re.match(r"^(?:open|edit|change|update|work on)(?: an| a| the| my| one of my)? (?:existing|old|saved|previous)"
+                 r" (?P<w>.+)$", t)
+    if m and _office_app(m.group("w")):
+        return Intent("office_open", {"app": _office_app(m.group("w")), "mode": "existing", "query": ""})
+    m = re.match(r"^(?:open|edit|update|work on)(?: the| my)? (?P<q>.+?) (?P<w>excel file|excel sheet|excel workbook|"
+                 r"spreadsheet|workbook|word file|word document|word doc|excel|word)$", t)
+    if m and m.group("q") not in ("a", "an", "new", "blank", "empty", "existing"):
+        return Intent("office_open", {"app": _office_app(m.group("w")), "mode": "existing", "query": m.group("q")})
+    m = re.match(r"^(?:open|edit|update|work on)(?: the| my)? (?P<q>.+?\.(?:xlsx|xls|xlsm|csv|docx|doc))$", t)
+    if m:
+        q = m.group("q")
+        return Intent("office_open", {"app": "excel" if re.search(r"\.(?:xlsx?|xlsm|csv)$", q) else "word",
+                                      "mode": "existing", "query": q})
+    m = re.match(r"^(?:please )?save(?: it| this| that| the (?:file|sheet|spreadsheet|workbook|document|doc|excel file|"
+                 r"word file|changes))?(?: now| please)?(?: as (?P<name>.+))?$", t)
+    if m:
+        return Intent("office_save", {"name": (m.group("name") or "").strip()})
+    if re.fullmatch(r"(?:please )?(?:undo|undo (?:it|that|this|the last (?:change|thing|edit))|take that back|go back)", t):
+        return Intent("office_undo")
+    return None
+
+
 def _claude(t: str) -> Intent | None:
     """Claude Code projects: list them, a project's status, or a task for one."""
     hit = _claude_task_control(t) or _prompt_request(t)
@@ -702,8 +749,8 @@ def _parse(text: str, default_service: str = "youtube",
             return hit
     if _SEARCH_LAST.match(t):
         return Intent("search_last")
-    hit = (_whatsapp(t) or _claude(t) or _email(t) or _liked(t) or _play(t, default_service) or _find_file(t)
-           or _weather(t) or _research(t))
+    hit = (_office(t) or _whatsapp(t) or _claude(t) or _email(t) or _liked(t) or _play(t, default_service)
+           or _find_file(t) or _weather(t) or _research(t))
     if hit:
         return hit
     m = re.match(r"^(?:search google for|search the web for|google search for|search online for|look online for|"

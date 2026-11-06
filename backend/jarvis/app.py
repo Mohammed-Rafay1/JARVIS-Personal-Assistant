@@ -20,7 +20,7 @@ from .audio.meter import levels
 from .audio.mic import SAMPLE_RATE as MIC_SR
 from .brain.intents import NO, STOP, YES, Intent, normalize, parse, parse_choice
 from .config import load_contacts
-from .tools import CTX
+from .tools import CTX, office
 from .tools.base import REGISTRY, Result, llm_tools
 
 log = logging.getLogger(__name__)
@@ -36,7 +36,11 @@ def help_text(sir: str, email: bool) -> str:
             "The full list is on your screen. Just tell me what you need.")
 # the on-screen version: every capability with phrases that work
 CAPABILITIES = [
-    ("Apps & windows", ["Open Excel / VS Code / Teams", "Close Spotify", "Open Claude Code", "Lock the screen"]),
+    ("Apps & windows", ["Open VS Code / Teams", "Close Spotify · Close the Design folder", "Open Claude Code",
+                        "Lock the screen"]),
+    ("Excel & Word", ["Open Excel → “new” or “existing”", "Add headings Name, Age and Salary · Write 500 in B2",
+                      "Make a table of monthly sales · Write a leave letter for Friday",
+                      "Save it → it asks the name · Undo · Close it"]),
     ("Files & folders", ["Open my Downloads folder", "Open flyer data.rar from my downloads",
                          "Where is the budget spreadsheet?", "Open the Solvix folder on my desktop"]),
     ("Web & research", ["Search Google for Odoo 18 release notes", "Research the history of Lahore on ChatGPT",
@@ -123,13 +127,25 @@ def _is_conversation(raw: str, t: str) -> bool:
 # commands whose words come from a fixed list, so the fast recogniser's text is reliable enough
 _CLOSED_INTENTS = {"stop", "help", "ack", "tell_time", "set_volume", "media_control", "lock_screen", "sleep_pc",
                    "claude_projects", "check_email", "emails_to_reply", "close_app", "open_any", "open_website",
-                   "play_spotify_liked", "email_ask_content", "whatsapp_ask", "calculate", "ask_song"}
+                   "play_spotify_liked", "email_ask_content", "whatsapp_ask", "calculate", "ask_song",
+                   "office_open", "office_save", "office_undo"}
+# "close excel", "close the file": the Excel / Word file Jarvis is working on (it asks to save first)
+_OFFICE_CLOSE = re.compile(r"(?:microsoft |ms )?(?:excel|word)|(?:the |this |that )?(?:file|sheet|spreadsheet|"
+                           r"workbook|document|doc|excel file|word file|it|this|that)")
+# words that make an unrecognised sentence an edit for the open Excel / Word file rather than a chat
+_OFFICE_WORDS = re.compile(
+    r"\b(?:[a-z]{1,2}\s?\d{1,5}|cells?|rows?|columns?|sheets?|tables?|headings?|headers?|titles?|paragraphs?|"
+    r"bullets?|points?|lines?|bold|italic|underline|font|size|colou?rs?|highlight|fill|formula|sum|total|average|"
+    r"chart|graph|width|autofit|align|center|centre|merge|borders?|sort|currency|percent|dates?|number format|"
+    r"letter|write|type|add|put|insert|enter|delete|remove|clear|rename|make|replace|change|data|values?|names?|"
+    r"list|text|sentence|word|words|page break|freeze)\b")
 _THEN = re.compile(r"\s+(?:and then|then|and also|and)\s+(?=(?:open|launch|start|play|search|google|close|"
                    r"email|mute|unmute|set|turn|go to|lock|pause|check)\b)")
 # how long Jarvis waits for the answer to its own question (seconds); drafts waiting for "send it" last longer
 _PENDING_TTL = {"send_email": 900, "wa_send": 900, "claude_send": 600, "email_list": 600, "reply_list": 600,
                 "choose_file": 300, "choose_recipient": 300, "need_address": 300, "email_recipient": 300,
-                "email_content": 300, "wa_content": 300, "wa_recipient": 300, "reply_text": 300}
+                "email_content": 300, "wa_content": 300, "wa_recipient": 300, "reply_text": 300,
+                "office_mode": 300, "office_file": 300, "office_pick": 300, "office_name": 600, "office_close": 300}
 # answers to Jarvis's own question that still count as a new command when they parse as one
 _WEAK = ("open_any", "open_file", "find_file")
 # "change it to ...", "ask it to ...": a reworded task, not a new command
@@ -752,6 +768,12 @@ class Jarvis:
                 if hit is not None and hit.tool in _CLOSED_INTENTS | {"play_youtube", "play_spotify", "web_search"}:
                     log.info("command found after misheard words: %r", tail)
                     intents = [hit]
+        if intents == [None] and re.fullmatch(r"close (?:it|this|that)", t) and office.active():
+            await self._deliver([await self._office_close()])
+            return
+        if intents == [None] and await self._office_target(text, t):  # an edit for the open Excel / Word file
+            await self._office_edit(text)
+            return
         if intents == [None]:
             if not typed and len(t.split()) <= 3 and conf < -0.7:
                 # a mumbled fragment ("Yeah, this.") once kept the model busy for a minute; ask instead
@@ -783,6 +805,19 @@ class Jarvis:
                 continue
             if intent.tool == "say":  # a fixed answer, e.g. something Jarvis can't do yet
                 results.append(Result(intent.args["text"]))
+                continue
+            if intent.tool == "office_open":  # Excel / Word: new or existing, then edits in plain words
+                results.append(await self._office_open(intent.args["app"], intent.args.get("mode", ""),
+                                                       intent.args.get("query", "")))
+                continue
+            if intent.tool == "office_save":
+                results.append(await self._office_save(intent.args.get("name", "")))
+                continue
+            if intent.tool == "office_undo":
+                results.append(await self._office_undo())
+                continue
+            if intent.tool == "close_app" and office.active() and _OFFICE_CLOSE.fullmatch(intent.args.get("name", "")):
+                results.append(await self._office_close())  # "close excel" / "close the file": ask to save first
                 continue
             if intent.tool == "whatsapp_ask":  # who? -> what? -> typed in WhatsApp -> "send it"
                 who = intent.args.get("contact", "")
@@ -935,6 +970,8 @@ class Jarvis:
             self.ui.send({"type": "card", "kind": "clear"})
             await self._deliver([await self.run_tool("claude_project_status", {"project": target})])
             return True
+        if kind in ("office_mode", "office_file", "office_pick", "office_name", "office_close"):
+            return await self._office_pending(p, t, raw)
         if kind in ("cc_project", "cc_new_name", "cc_chat"):
             return await self._claude_prompt_step(p, t, raw)
         if kind == "claude_task_offer":  # "Would you like to give Claude Code a task in it?"
@@ -1492,6 +1529,230 @@ class Jarvis:
         await self.say(f"Updated. It now reads: {greeting} {draft_text(body)} Shall I send it?",
                        follow=True, then_idle=False)
 
+    # ------------------------------------------------------------------ Excel & Word
+    async def _office_session(self) -> office.Session | None:
+        """The file being worked on, still open; or the workbook / document on screen (opened by hand)."""
+        s = office.active()
+        if s and await office.run(office.com_alive, s):
+            return s
+        office.SESSION = await office.run(office.com_attach)
+        return office.SESSION
+
+    async def _office_target(self, raw: str, t: str) -> bool:
+        """Is this unrecognised sentence an edit for the open Excel / Word file (not a chat)?"""
+        if _is_conversation(raw, t) and not _OFFICE_WORDS.search(t):
+            return False
+        if office.active():
+            return True
+        # Excel or Word opened some other way: only clearly spreadsheet / document wording attaches to it
+        if re.search(r"\b(?:[a-z]{1,2}\d{1,5}|cell|cells|rows?|columns?|sheet|heading|paragraph)\b", t):
+            return await self._office_session() is not None
+        return False
+
+    async def _office_open(self, app: str, mode: str, query: str = "") -> Result:
+        k = office.KINDS[app]
+        if not mode:
+            return Result(f"Shall I open a new {k['label']} file, or an existing one you want to edit?", icon="file",
+                          pending={"kind": "office_mode", "app": app})
+        if mode == "new":
+            self._set_state("acting", icon="app")
+            try:
+                s = await office.run(office.com_new, app)
+            except office.OfficeError as e:
+                return Result(str(e), ok=False, icon="app")
+            office.SESSION = s
+            return Result(f"A new {k['label']} {k['thing']} is open, {self.cfg['address_as']}. Tell me what to put in "
+                          "it, and say save it when you're done.", icon="app")
+        if not query:
+            return Result(f"Which {k['label']} file? Say its name.", icon="file",
+                          pending={"kind": "office_file", "app": app})
+        return await self._office_find(app, query)
+
+    async def _office_find(self, app: str, query: str, asked: bool = False) -> Result:
+        from .tools.files import _clear_winner, find_files, where_phrase
+
+        k = office.KINDS[app]
+        query = re.sub(r"\b(?:the|my|file|one|called|named)\b", " ", query).strip() or query
+        paths = [p for p in await asyncio.to_thread(find_files, query, app) if office.kind_of(p) == app][:6]
+        if not paths:
+            if asked:
+                return Result(f"I still can't find a {k['label']} file called {query}. You can open it yourself, "
+                              "and I'll work on whatever is on screen.", ok=False, icon="app")
+            return Result(f"I couldn't find a {k['label']} file called {query}. What's it called?", ok=False,
+                          icon="file", pending={"kind": "office_file", "app": app, "asked": True})
+        if len(paths) == 1 or _clear_winner(query, paths):
+            return await self._office_open_path(paths[0])
+        names = [Path(p).name for p in paths]
+        card = {"kind": "choices", "title": f"Which {k['label']} file?", "items": names,
+                "subs": [where_phrase(p) for p in paths]}
+        listed = ", ".join(f"{i}, {Path(p).stem} {where_phrase(p)}" for i, p in enumerate(paths[:4], 1))
+        return Result(f"I found {len(paths)}. {listed}. Which one?", icon="file", card=card,
+                      pending={"kind": "office_pick", "paths": paths})
+
+    async def _office_open_path(self, path: str) -> Result:
+        self._set_state("acting", icon="app")
+        try:
+            s = await office.run(office.com_open, path)
+        except office.OfficeError as e:
+            return Result(str(e), ok=False, icon="app")
+        office.SESSION = s
+        return Result(f"Opened {Path(path).stem}. What would you like to change?", icon="app")
+
+    async def _office_edit(self, text: str) -> None:
+        s = await self._office_session()
+        if s is None:
+            await self._deliver([Result("There's no Excel or Word file open. Say open Excel or open Word first.",
+                                        ok=False, icon="app")])
+            return
+        quick = office.quick_ops(s.kind, text, await office.run(office.com_info, s))
+        if quick:
+            ops, said = quick
+        else:  # anything else: the language model turns it into operations
+            if not await self.llm.available():
+                await self._deliver([Result("I need my language model for that one. Simple things work without it, "
+                                            "like write 500 in B2, add headings Name and Age, or make row 1 bold.",
+                                            ok=False, icon="app")])
+                return
+            self._set_state("thinking")
+            # the model writes about five words a second on this laptop: say so rather than go quiet
+            self._queue_speech(f"Working on it, {self.cfg['address_as']}. This one takes me about a minute.",
+                               filler=True)
+            snapshot = await office.run(office.com_snapshot, s)
+            try:
+                ops, said = await office.plan(s.kind, text, snapshot, self.llm)
+            except Exception:
+                log.exception("office plan failed")
+                ops, said = [], ""
+            if not ops:
+                await self._deliver([Result(said if said.endswith("?") else
+                                            "I'm not sure what to change there. Could you say it another way?",
+                                            ok=False, icon="app")])
+                return
+        self._set_state("acting", icon="app")
+        done, problems = await office.run(office.com_apply, s, ops)
+        log.info("office edit %r: %d of %d done %s", text, done, len(ops), problems or "")
+        if not done:
+            await self._deliver([Result(f"That didn't work in {s.label}. Could you say it another way?", ok=False,
+                                        icon="app")])
+            return
+        note = " One part of it didn't work, though." if problems else ""
+        await self._deliver([Result((said or "Done.") + note, icon="app")])
+
+    async def _office_save(self, name: str = "", then_close: bool = False) -> Result:
+        from .tools.files import where_phrase
+
+        s = await self._office_session()
+        if s is None:
+            return Result("There's no Excel or Word file open for me to save.", ok=False, icon="app")
+        if not name and not s.path:  # a new file: it needs a name first
+            return Result("What should I call it?", icon="file", pending={"kind": "office_name", "close": then_close})
+        self._set_state("acting", icon="app")
+        try:
+            if name:
+                wanted = office.save_folder(self.cfg) / office.file_name(name, s.kind)
+                wanted.parent.mkdir(parents=True, exist_ok=True)
+                path = office.unique(wanted)
+                await office.run(office.com_save, s, str(path))
+                said = f"Saved as {path.stem} {where_phrase(str(path))}."
+                if path != wanted:
+                    said = f"There's already a file called {wanted.stem}, so I saved it as {path.stem} " \
+                           f"{where_phrase(str(path))}."
+            else:
+                await office.run(office.com_save, s, "")
+                said = f"Saved {Path(s.path).stem}."
+        except office.OfficeError as e:
+            return Result(str(e), ok=False, icon="app")
+        if then_close:
+            await office.run(office.com_close, s, False)
+            office.SESSION = None
+            said += " And closed it."
+        return Result(said, icon="app")
+
+    async def _office_close(self) -> Result:
+        s = await self._office_session()
+        if s is None:
+            return Result("There's no Excel or Word file open.", ok=False, icon="app")
+        if s.changed:
+            return Result(f"Shall I save {s.title} before closing it?", icon="file", pending={"kind": "office_close"})
+        await office.run(office.com_close, s, False)
+        office.SESSION = None
+        return Result(f"Closed {s.title}.", icon="app")
+
+    async def _office_undo(self) -> Result:
+        s = await self._office_session()
+        if s is None:
+            return Result("There's nothing open for me to undo.", ok=False, icon="app")
+        ok = await office.run(office.com_undo, s)
+        return Result("Undone." if ok else "There's nothing of mine to undo.", ok=ok, icon="app")
+
+    async def _office_pending(self, p: dict, t: str, raw: str) -> bool:
+        """Answers to Jarvis's Excel / Word questions."""
+        kind = p["kind"]
+        self.pending = None
+        if STOP.match(t):
+            return False
+        other = parse(t)
+        is_new_command = other is not None and other.tool not in ("open_any", "open_file", "ack")
+        if kind == "office_mode":  # "a new one, or an existing one?"
+            if re.search(r"\b(?:new|blank|fresh|empty|create)\b", t) or parse_choice(t) == 1:
+                await self._deliver([await self._office_open(p["app"], "new")])
+                return True
+            if re.search(r"\b(?:existing|old|saved|previous|edit|second)\b", t) or parse_choice(t) == 2:
+                q = re.sub(r"^.*?\b(?:existing|old|saved|previous)\b(?: one| file)?[\s,]*", "", t).strip()
+                await self._deliver([await self._office_open(p["app"], "existing", q)])
+                return True
+            if NO.match(t):
+                await self.say("Okay.", then_idle=True)
+                return True
+            if is_new_command:
+                return False
+            await self._deliver([await self._office_find(p["app"], t)])  # a file name straight away
+            return True
+        if kind in ("office_file", "office_pick"):
+            if NO.match(t):
+                await self.say("Okay.", then_idle=True)
+                return True
+            if kind == "office_pick":
+                idx = parse_choice(t)
+                paths = p["paths"]
+                if idx is not None and (idx == -1 or 1 <= idx <= len(paths)):
+                    await self._deliver([await self._office_open_path(paths[idx - 1 if idx > 0 else -1])])
+                    return True
+                hit = next((x for x in paths if Path(x).stem.lower() in t or t in Path(x).stem.lower()), None)
+                if hit:
+                    await self._deliver([await self._office_open_path(hit)])
+                    return True
+            if is_new_command:
+                return False
+            app = p.get("app") or office.kind_of(p["paths"][0])
+            await self._deliver([await self._office_find(app, raw.strip().rstrip("."), asked=bool(p.get("asked")))])
+            return True
+        if kind == "office_name":  # "What should I call it?"
+            if NO.match(t):
+                await self.say("Okay, not saved yet.", then_idle=True)
+                return True
+            if is_new_command:
+                return False
+            await self._deliver([await self._office_save(raw.strip().rstrip("."), then_close=p.get("close", False))])
+            return True
+        if kind == "office_close":  # "Shall I save it before closing?"
+            s = await self._office_session()
+            if YES.match(t):
+                if s and not s.path:
+                    self.pending = {"kind": "office_name", "close": True}
+                    await self.say("What should I call it?", follow=True, then_idle=False)
+                    return True
+                await self._deliver([await self._office_save(then_close=True)])
+                return True
+            if NO.match(t) or re.search(r"\b(?:don't|do not|without|discard)\b", t):
+                if s:
+                    await office.run(office.com_close, s, False)
+                office.SESSION = None
+                await self.say("Closed without saving.", then_idle=True)
+                return True
+            return False
+        return False
+
     # ------------------------------------------------------------------ chat (LLM)
     async def _chat(self, text: str) -> None:
         if not await self.llm.available():
@@ -1645,6 +1906,7 @@ class Jarvis:
             return
         from .audio.tts import split_sentences
 
+        log.info("jarvis: %r", text[:300])
         self.ui.send({"type": "reply", "text": "", "append": False})
         for s in split_sentences(text):
             self._queue_speech(s)

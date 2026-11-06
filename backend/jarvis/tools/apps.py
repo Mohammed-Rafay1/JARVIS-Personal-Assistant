@@ -136,10 +136,74 @@ def _close_windows(name: str) -> list[str]:
     return sorted(closed)
 
 
-@tool("Close an open application window by name (the app may ask to save work)",
-      name="Application name")
+_FOLDER_WORDS = re.compile(r"\b(?:the|my|this|that|these|those|all|open|folders?|windows?|file explorer|explorer)\b")
+
+
+def folder_query(name: str) -> str:
+    """'the Design folder' -> 'design'; 'the folder' -> '' (the last one opened)."""
+    return re.sub(r"\s+", " ", _FOLDER_WORDS.sub(" ", name.lower())).strip()
+
+
+def pick_folders(name: str, open_folders: list[str]) -> list[int]:
+    """Which open folder windows (by folder name, oldest first) "close <name>" means."""
+    q = folder_query(name)
+    if not q:
+        if not open_folders:
+            return []
+        return list(range(len(open_folders))) if re.search(r"\ball\b|\bfolders\b", name.lower()) \
+            else [len(open_folders) - 1]
+    hits = [i for i, f in enumerate(open_folders)
+            if f.lower() == q or fuzz.ratio(q, f.lower()) >= 80 or (len(q) >= 4 and q in f.lower())]
+    return hits
+
+
+def _close_folders(name: str) -> list[str]:
+    """Close File Explorer windows showing the folder you named (5 Nov: "close Design folder" did nothing,
+    because Explorer windows were never matched)."""
+    import pythoncom
+    import win32com.client
+
+    pythoncom.CoInitialize()
+    try:
+        windows = []
+        for w in win32com.client.Dispatch("Shell.Application").Windows():
+            try:
+                if str(w.FullName).lower().endswith("explorer.exe"):
+                    windows.append((w, str(w.LocationName)))
+            except Exception:
+                continue
+        closed = []
+        for i in pick_folders(name, [loc for _, loc in windows]):
+            w, loc = windows[i]
+            try:
+                w.Quit()
+                closed.append(loc)
+            except Exception:
+                log.warning("could not close folder window %s", loc)
+        log.info("close folder %r: open=%s closed=%s", name, [loc for _, loc in windows], closed)
+        return closed
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def _folders_said(closed: list[str]) -> str:
+    return closed[0] if len(closed) == 1 else f"{len(closed)} folders"
+
+
+@tool("Close an open application window or folder window by name (the app may ask to save work)",
+      name="Application or folder name")
 async def close_app(name: str) -> Result:
+    if re.search(r"\bfolders?\b|\bexplorer\b", name.lower()):
+        closed = await asyncio.to_thread(_close_folders, name)
+        if closed:
+            return Result(f"Closed {_folders_said(closed)}.", icon="folder")
+        q = folder_query(name)
+        return Result(f"I don't see the {q} folder open." if q else "I don't see a folder open.", ok=False,
+                      icon="folder")
     closed = await asyncio.to_thread(_close_windows, name)
     if not closed:
+        folders = await asyncio.to_thread(_close_folders, name)  # "close Solvix": an open folder of that name
+        if folders:
+            return Result(f"Closed {_folders_said(folders)}.", icon="folder")
         return Result(f"I don't see {name} open.", ok=False, icon="app")
     return Result(f"Closing {name}.", icon="app")
