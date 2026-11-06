@@ -113,6 +113,101 @@ def in_short(text: str) -> str:
     return re.sub(r"\s+", " ", m.group(1)).strip()[:500] if m else ""
 
 
+def lead(text: str, n: int = 2) -> str:
+    """The opening of the answer's first real paragraph (not a title, a date line or a bullet)."""
+    for line in text.splitlines():
+        line = line.strip()
+        if len(line.split()) >= 8 and not line.startswith(("•", "-")) and re.search(r"[.!?]", line):
+            return first_sentences(line, n)
+    return first_sentences(text, n)
+
+
+# (text, top on screen, text height, kind): kind "p" paragraph text, "li" inside a list item, "cell" a table cell
+Piece = tuple[str, "int | None", "int | None", str]
+
+
+def reflow(pieces: list[Piece]) -> str:
+    """Rebuild an answer's lines from its on-screen text pieces.
+
+    ChatGPT's app exposes an answer word by word ("Born: ", "20 ", "April ", "1889"); joined one per line that
+    became a single tall column of words on WhatsApp (6 Nov). Pieces on the same screen line, or a wrapped line
+    after a piece ending in a space, belong to the same paragraph unless the text size changes (a heading);
+    pieces inside a list item become "• ...", and a table's cells "• 1933 – Appointed Chancellor"."""
+    blocks: list[tuple[str, str]] = []
+    cur, cur_kind, prev = "", "p", None
+    for text, top, h, kind in pieces:
+        if not text.strip():
+            continue
+        if prev is None:
+            cur, cur_kind = text, kind
+        else:
+            ptext, ptop, ph, pkind = prev
+            same_line = top is not None and ptop is not None and abs(top - ptop) <= 8
+            same_size = h is None or ph is None or abs(h - ph) <= 4
+            if kind == "cell" or pkind == "cell":
+                joined = kind == pkind == "cell" and same_line
+                if joined:
+                    cur += " – " + text.strip()
+            else:
+                wrapped = ptext[-1:].isspace() and kind == pkind and same_size
+                joined = (same_line and same_size) or wrapped or (text[:1] in ",.;:!?)" and same_size)
+                if joined:
+                    glue = "" if ptext[-1:].isspace() or text[:1].isspace() or text[:1] in ",.;:!?)" else " "
+                    cur += glue + text
+            if not joined:
+                blocks.append((cur, cur_kind))
+                cur, cur_kind = text, kind
+        prev = (text, top, h, kind)
+    if cur.strip():
+        blocks.append((cur, cur_kind))
+    lines = []
+    for i, (text, kind) in enumerate(blocks):
+        t = re.sub(r"\s+", " ", text).strip()
+        t = re.sub(r"^(?:chatgpt|claude|you) said:\s*", "", t, flags=re.I)  # a screen-reader label on the same line
+        if not t or _NOISE.match(t):
+            continue
+        if kind == "cell" and (i == 0 or blocks[i - 1][1] != "cell"):
+            lines.append(t)          # a table's heading row ("Date – Event"), shown as a title
+        else:
+            lines.append(f"• {t}" if kind in ("li", "cell") else t)
+    return re.sub(r"[*#`>|]+", "", "\n".join(lines)).strip()
+
+
+def _piece(e) -> Piece:
+    try:
+        r = e.element_info.rectangle
+        top, h = int(r.top), int(r.bottom - r.top)
+    except Exception:
+        top = h = None
+    try:
+        parent = e.element_info.parent.control_type or ""
+    except Exception:
+        parent = ""
+    kind = "cell" if _ctype(e) == "DataItem" else "li" if parent == "ListItem" else "p"
+    return _name(e), top, h, kind
+
+
+def _is_piece(e) -> bool:
+    """Answer text: Text elements, and table cells (DataItems inside a row DataItem)."""
+    c = _ctype(e)
+    if c == "Text":
+        return bool(_name(e).strip())
+    if c == "DataItem" and _name(e).strip():
+        try:
+            return (e.element_info.parent.control_type or "") == "DataItem"
+        except Exception:
+            return False
+    return False
+
+
+def answer_lines(items, prompt: str) -> str:
+    """The answer after your question, rebuilt into paragraphs, bullet points and table rows (one pass)."""
+    pieces = [_piece(e) for e in items if _is_piece(e)]
+    key = re.sub(r"\s+", " ", prompt).strip().lower()[:60]
+    at = next((i for i, p in enumerate(pieces) if key and key in re.sub(r"\s+", " ", p[0]).lower()), -1)
+    return reflow(pieces[at + 1:]) if at >= 0 else ""
+
+
 def answer_after(texts: list[str], prompt: str) -> str:
     """The conversation's text in reading order -> what came after your question (the answer so far).
     Your question is the FIRST text that starts like it; a short question's words also appear all
@@ -345,12 +440,23 @@ def submit(key: str, prompt: str):
     return w
 
 
-def wait_answer(key: str, w, prompt: str, timeout: float = 120) -> Answer:
+def _final(items, prompt: str, rough: str) -> str:
+    """The finished answer laid out properly; the rough per-piece text if that fails."""
+    if not items:
+        return rough
+    try:
+        return answer_lines(items, prompt) or rough
+    except Exception as e:
+        log.debug("answer layout failed: %s", e)
+        return rough
+
+
+def wait_answer(key: str, w, prompt: str, timeout: float = 150) -> Answer:
     """Read the conversation until the answer stops growing and the app no longer shows Stop."""
     _com()
     app = APPS[key]
     start = time.monotonic()
-    deadline, last, stable, seen, nudged = start + timeout, "", 0, 0.0, False
+    deadline, last, stable, seen, nudged, last_items = start + timeout, "", 0, 0.0, False, None
     while time.monotonic() < deadline:
         time.sleep(1.0)
         if not last and not nudged and time.monotonic() - start > 25 and not screen_locked():
@@ -376,12 +482,14 @@ def wait_answer(key: str, w, prompt: str, timeout: float = 120) -> Answer:
             seen = time.monotonic() - start
         stable = stable + 1 if text and text == last and not busy else 0
         last = text
+        if text:
+            last_items = items
         if stable >= 2:
             log.info("%s answered: first text after %.1fs, done after %.1fs (one read %.1fs)", app.name, seen,
                      time.monotonic() - start, time.monotonic() - t0)
-            return Answer(key, text)
+            return Answer(key, _final(items, prompt, text))
     log.info("%s: answer not readable within %.0fs (window switched away?)", app.name, timeout)
-    return Answer(key, last, "" if last else "unread")
+    return Answer(key, _final(last_items, prompt, last), "" if last else "unread")
 
 
 async def ask_all(keys: list[str], prompt: str) -> list[Answer]:
@@ -416,15 +524,17 @@ async def summarise(question: str, answers: list[Answer]) -> str:
     if CTX.llm and await CTX.llm.available():
         body = "\n\n".join(f"{APPS[a.service].name}'s answer:\n{a.text[:1500]}" for a in got)
         try:
+            # 6 Nov: 30 s wasn't enough for this CPU to read 1500 characters and write a summary
             text = await asyncio.wait_for(CTX.llm.complete(
                 "Summarise these answers for the user, to be read aloud: two or three short plain sentences, "
                 "the key facts only, no lists, no markdown, no mention of which assistant said what unless they "
-                "disagree.", f"Question: {question}\n\n{body}", max_tokens=160), timeout=30)
+                "disagree.", f"Question: {question}\n\n{body}", max_tokens=120), timeout=60)
             if text:
                 return re.sub(r"\s+", " ", re.sub(r"[*#`]", "", text)).strip()
         except Exception as e:
             log.warning("research summary failed: %s", e.__class__.__name__)
-    return own[0] if own else first_sentences(got[0].text, 3)
+    # no summary: the opening of the first real paragraph, not the title and date lines
+    return own[0] if own else lead(got[0].text, 3)
 
 
 def _names(keys: list[str]) -> str:
@@ -464,7 +574,7 @@ async def ai_research(query: str, services: str = "") -> Result:
         notes.append(f"{_names(unread)} has your answer in its app, but I couldn't read it back.")
     answered = [a.service for a in answers if a.text]
     card = {"kind": "research", "query": query, "summary": summary,
-            "answers": [{"service": APPS[a.service].name, "text": a.text[:1500], "problem": a.problem}
+            "answers": [{"service": APPS[a.service].name, "text": a.text[:4000], "problem": a.problem}
                         for a in answers]}
     if summary:
         say = f"{summary} The full answer{'s are' if len(answered) > 1 else ' is'} open in {_names(answered)}."

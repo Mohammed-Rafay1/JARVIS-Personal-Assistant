@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -59,6 +60,30 @@ def encode_voice_note(audio: np.ndarray, sr: int, path: str | Path) -> float:
     return pcm.size / sr
 
 
+def chat_layout(text: str, limit: int = 3000) -> str:
+    """An answer laid out for a chat: paragraphs with a blank line between them, bullets kept together,
+    titles in bold ("1. Who was...?", "A. The Holocaust", a short opening line), cut at a whole line (not
+    mid-word) with "…" when it's long."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    out: list[str] = []
+    size = 0
+    for i, ln in enumerate(lines):
+        bullet = ln.startswith(("•", "- "))
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        short = not bullet and len(ln) <= 80
+        numbered = short and re.match(r"^(?:\d{1,2}|[A-Z])[.)]\s+\S", ln) and not re.search(r"[.,;]$", ln)
+        title = numbered or (short and not re.search(r"[.!?,;:]$", ln)
+                             and (i == 0 or not nxt or len(nxt) > len(ln) or nxt.startswith("•")))
+        piece = f"*{ln}*" if title else ln
+        sep = "\n" if (bullet and out and out[-1].lstrip().startswith(("•", "- "))) else "\n\n"
+        if size + len(sep) + len(piece) > limit and out:
+            out.append("\n\n…")
+            break
+        out.append((sep if out else "") + piece)
+        size += len(sep) + len(piece)
+    return "".join(out)
+
+
 def card_text(card: dict[str, Any]) -> str:
     """The on-screen card as chat text, so lists and drafts can be answered from the phone."""
     kind = card.get("kind")
@@ -82,7 +107,7 @@ def card_text(card: dict[str, Any]) -> str:
     if kind == "capabilities":
         return "\n".join(f"*{g['title']}*: " + "; ".join(g["items"]) for g in card.get("groups", []))
     if kind == "research":
-        parts = [f"*{a['service']}*\n{a['text'][:1200]}" if a.get("text")
+        parts = [f"*{a['service']}*\n{chat_layout(a['text'])}" if a.get("text")
                  else f"*{a['service']}*: " + {"not_installed": "the app didn't open on the laptop.",
                                                "unread": "the answer is in the app on the laptop."}.get(
                      a.get("problem"), "not asked (I couldn't type into it safely).")

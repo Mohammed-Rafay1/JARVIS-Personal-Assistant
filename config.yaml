@@ -5,12 +5,14 @@ address_as: "sir"            # how Jarvis addresses you
 wake_word:
   enabled: true
   model: hey_jarvis          # pretrained openWakeWord model
-  threshold: 0.15            # lower (0.35) if it misses you, raise (0.6) if it wakes by accident
+  threshold: 0.10            # lower (0.35) if it misses you, raise (0.6) if it wakes by accident
   threshold_while_speaking: 0.75
+  verifier_trigger: 0.03     # stock score at which your voice model takes over
+  verifier: ""               # your own "Hey Jarvis" model from calibrate_wake.bat ("" = the standard one)
   whisper_backup: true       # also spot "Hey Jarvis" with speech recognition (helps accents the model misses)
-  verify_below: 0.5          # a weaker hit only wakes Jarvis if speech recognition hears "Jarvis" (stops videos/TV waking it)
-  accept_unheard_above: 0.25 # ...or if it hears nothing at all and the hit was at least this strong (a quiet "Hey Jarvis")
-  near_peak: 0.3             # only short phrases at least this loud (you, at the laptop) are checked
+  verify_below: 0.50         # a weaker hit only wakes Jarvis if speech recognition hears "Jarvis" (stops videos/TV waking it)
+  accept_unheard_above: 0.20 # ...or if it hears nothing at all and the hit was at least this strong (a quiet "Hey Jarvis")
+  near_peak: 0.50            # only short phrases at least this loud (you, at the laptop) are checked
 
 mic:
   gain: 1.0                  # software boost for a quiet mic; calibrate_wake.bat sets this for you

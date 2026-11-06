@@ -133,9 +133,15 @@ def save_config(values: dict) -> None:
             s = re.sub(r"(?m)^(  gain:\s*)[\d.]+", rf"\g<1>{val:.1f}", s, count=1)
             continue
         text = f'"{val}"' if isinstance(val, str) else f"{val:.2f}"
-        pat = rf"(?m)^(  {key}:\s*)(?:\"[^\"]*\"|[\d.]+)"
+        pat = rf"(?m)^(  {key}:)(\s*)(?:\"[^\"]*\"|[\d.]+)([ \t]*)(#.*)?$"
         if re.search(pat, s):
-            s = re.sub(pat, lambda m: m.group(1) + text, s, count=1)
+            def put(m, text=text):  # the new value, with the comment kept in its column
+                head = f"{m.group(1)} {text}"
+                if not m.group(4):
+                    return head
+                width = len(m.group(0)) - len(m.group(4))
+                return head.ljust(width) if len(head) < width else head + " "
+            s = re.sub(pat, lambda m: put(m) + (m.group(4) or ""), s, count=1)
         else:  # a new setting: add it to the wake_word section
             line = f"  {key}: {text}".ljust(29) + notes.get(key, "")
             s = re.sub(r"(?m)^(  threshold_while_speaking:.*)$", lambda m: m.group(1) + "\n" + line, s, count=1)
