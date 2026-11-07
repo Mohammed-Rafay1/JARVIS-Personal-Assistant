@@ -8,15 +8,19 @@ import secrets
 import subprocess
 import sys
 
-from .config import ROOT, load_config, setup_logging
+from .config import ROOT, WINDOWS, load_config, setup_logging
 from .priority import boost_priority
 
 log = logging.getLogger("jarvis")
 _EXIT = {"code": 0}
-ELECTRON = ROOT / "ui" / "node_modules" / "electron" / "dist" / "electron.exe"
+ELECTRON = ROOT / "ui" / "node_modules" / "electron" / "dist" / ("electron.exe" if WINDOWS else "electron")
 
 
 def _single_instance() -> object | None:
+    if not WINDOWS:
+        from .linux import single_instance
+
+        return single_instance()
     import win32api
     import win32event
     import winerror
@@ -31,8 +35,10 @@ def _spawn_ui(port: int, token: str, hotkey: str) -> subprocess.Popen | None:
     if not ELECTRON.exists():
         log.error("overlay not installed: run `npm install` in %s", ROOT / "ui")
         return None
-    return subprocess.Popen([str(ELECTRON), str(ROOT / "ui"), f"--jarvis-port={port}", f"--jarvis-token={token}",
-                             f"--jarvis-hotkey={hotkey}"], cwd=str(ROOT / "ui"))
+    # Ubuntu's AppArmor blocks Chromium's sandbox; the overlay only loads its own local files
+    no_sandbox = [] if WINDOWS else ["--no-sandbox"]
+    return subprocess.Popen([str(ELECTRON), *no_sandbox, str(ROOT / "ui"), f"--jarvis-port={port}",
+                             f"--jarvis-token={token}", f"--jarvis-hotkey={hotkey}"], cwd=str(ROOT / "ui"))
 
 
 async def _run(cfg: dict, with_ui: bool, port: int = 0, token: str = "") -> None:
@@ -65,6 +71,22 @@ async def _run(cfg: dict, with_ui: bool, port: int = 0, token: str = "") -> None
                 return
 
     asyncio.create_task(watch_ui())
+    if not WINDOWS:  # stop_jarvis.sh, Ctrl+C, closed terminal: release the mic, restore volumes, close the overlay
+        import signal
+
+        def shutdown() -> None:
+            log.info("stop requested; shutting down")
+            if jarvis.ducker:
+                jarvis.ducker.restore()
+            if jarvis.mic:
+                jarvis.mic.stop()
+            if ui is not None and ui.poll() is None:
+                ui.terminate()
+            for task in asyncio.all_tasks():  # the main task ending stops the loop
+                task.cancel()
+
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            asyncio.get_running_loop().add_signal_handler(sig, shutdown)
     try:
         await jarvis.start()
     except Exception:
@@ -112,7 +134,7 @@ def main() -> None:
         if lock is None:
             print("Jarvis is already running (look for the orb in the bottom-right corner).")
             sys.exit(0)
-        if not args.no_ui:
+        if not args.no_ui and WINDOWS:  # on Linux a crash stays stopped: JARVIS never restarts itself
             sys.exit(_supervise(sys.argv[1:]))
     boost_priority()
     loop = asyncio.new_event_loop()

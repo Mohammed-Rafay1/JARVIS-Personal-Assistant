@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import sys
-import winreg
+
+from ..config import WINDOWS
+
+if WINDOWS:
+    import winreg
 
 _BASE = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
 
@@ -17,6 +21,10 @@ def _in_use(key) -> bool:
 
 
 def mic_in_use_by_others() -> bool:
+    if not WINDOWS:
+        from ..linux import mic_in_use_by_others as others_recording
+
+        return others_recording()
     me = sys.executable.lower().replace("\\", "#")
     try:
         root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _BASE)

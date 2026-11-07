@@ -2,7 +2,7 @@ numpy==2.5.4
 sounddevice==0.5.6
 webrtcvad-wheels==2.0.14.post1
 faster-whisper==1.2.1
-openwakeword==0.6.0
+openwakeword==0.6.0; sys_platform == "win32"
 onnxruntime==1.31.1
 piper-tts==1.8.0
 kokoro-onnx==0.6.1
@@ -10,10 +10,10 @@ rapidfuzz==3.14.6
 yt-dlp==2026.10.26
 websockets==17.3
 pyyaml==6.0.3
-pycaw==20260927
-comtypes==1.4.17
-pywin32==312
-pywinauto==0.6.9
+pycaw==20260927; sys_platform == "win32"
+comtypes==1.4.17; sys_platform == "win32"
+pywin32==312; sys_platform == "win32"
+pywinauto==0.6.9; sys_platform == "win32"
 psutil==7.2.2
 httpx==0.28.1
 keyring==25.7.0

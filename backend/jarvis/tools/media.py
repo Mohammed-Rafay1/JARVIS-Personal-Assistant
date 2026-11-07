@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 
+from ..config import WINDOWS
 from .base import Result, tool
 
 VK = {"play_pause": 0xB3, "next": 0xB0, "previous": 0xB1, "stop": 0xB2, "mute": 0xAD}
@@ -10,12 +11,20 @@ KEYUP = 0x0002
 
 
 def press(vk: int) -> None:
+    if not WINDOWS:
+        from ..linux import media_key
+
+        return media_key(vk)
     u = ctypes.windll.user32
     u.keybd_event(vk, 0, 1, 0)          # KEYEVENTF_EXTENDEDKEY
     u.keybd_event(vk, 0, 1 | KEYUP, 0)
 
 
 def _endpoint():
+    if not WINDOWS:
+        from ..linux import Endpoint
+
+        return Endpoint()
     from pycaw.pycaw import AudioUtilities
 
     dev = AudioUtilities.GetSpeakers()

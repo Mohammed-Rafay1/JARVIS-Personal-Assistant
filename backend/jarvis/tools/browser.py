@@ -9,6 +9,7 @@ from urllib.parse import quote_plus
 
 from rapidfuzz import fuzz, process
 
+from ..config import WINDOWS
 from . import CTX
 from .base import Result, tool
 
@@ -19,6 +20,10 @@ _BROWSER_EXE = {"chrome": "chrome.exe", "google chrome": "chrome.exe", "edge": "
 
 
 def open_url(url: str, browser: str = "") -> None:
+    if not WINDOWS:
+        from ..linux import open_url as linux_open_url
+
+        return linux_open_url(url, browser)
     exe = _BROWSER_EXE.get(browser.lower().strip())
     if exe:
         try:

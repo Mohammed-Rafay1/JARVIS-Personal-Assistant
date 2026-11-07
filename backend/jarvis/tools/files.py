@@ -10,7 +10,13 @@ from pathlib import Path
 
 from rapidfuzz import fuzz
 
+from ..config import WINDOWS
 from . import CTX
+
+if WINDOWS:
+    _startfile = os.startfile
+else:
+    from ..linux import open_path as _startfile
 from .base import Result, tool
 
 log = logging.getLogger(__name__)
@@ -59,6 +65,8 @@ def match_folder(name: str) -> Path | None:
 
 
 def _search_index(words: list[str], exts: list[str], roots: list[Path], limit: int = 25) -> list[tuple[str, float]]:
+    if not WINDOWS:  # no Windows Search index: find_files scans the folders instead
+        return []
     import pythoncom
     import win32com.client
 
@@ -138,7 +146,7 @@ async def open_folder(name: str) -> Result:
     path = match_folder(name)
     if path is None or not path.exists():
         return await open_file(name)
-    os.startfile(str(path))
+    _startfile(str(path))
     return Result(f"Opening {path.name}.", icon="folder")
 
 
@@ -149,7 +157,7 @@ async def open_file(query: str, kind: str = "") -> Result:
     if not paths:
         return Result(f"I couldn't find a file matching {query}.", ok=False, icon="folder")
     if len(paths) == 1 or _clear_winner(query, paths):
-        os.startfile(paths[0])
+        _startfile(paths[0])
         return Result(f"Opening {Path(paths[0]).stem}.", icon="folder")
     top = paths[:3]
     names = [Path(p).name for p in top]
@@ -166,7 +174,7 @@ async def open_file(query: str, kind: str = "") -> Result:
 def _short_folder(path: str) -> str:
     parent = Path(path).parent
     try:
-        return "~\\" + str(parent.relative_to(HOME))
+        return "~" + os.sep + str(parent.relative_to(HOME))
     except ValueError:
         return str(parent)
 
@@ -177,5 +185,5 @@ def _clear_winner(query: str, paths: list[str]) -> bool:
 
 
 def open_path(path: str) -> Result:
-    os.startfile(path)
+    _startfile(path)
     return Result(f"Opening {Path(path).stem}.", icon="folder")

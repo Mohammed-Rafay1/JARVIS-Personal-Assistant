@@ -12,6 +12,8 @@ const TOKEN = arg('token', '');
 const HOTKEY = arg('hotkey', 'Control+Alt+J');
 const ROOT = path.resolve(__dirname, '..');
 const W = 440, H = 640, MARGIN = 8;
+const LINUX = process.platform === 'linux';
+if (LINUX) app.setPath('userData', path.join(ROOT, 'data', 'electron'));  // keep the browser profile inside the project
 
 let win, tray, muted = false, mode = 'dock';
 // No single-instance lock here: the backend's mutex already allows one Jarvis, and after a crash
@@ -19,7 +21,10 @@ let win, tray, muted = false, mode = 'dock';
 
 function place() {
   if (mode === 'full') {  // a call covers the whole screen the cursor is on
-    win.setBounds(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).bounds);
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    // Linux: a frameless window exactly the size of the monitor counts as fullscreen in GNOME, which then
+    // hides the dock and top bar. The work area leaves them visible.
+    win.setBounds(LINUX ? display.workArea : display.bounds);
     return;
   }
   const { workArea } = screen.getPrimaryDisplay();
@@ -46,6 +51,21 @@ function createWindow() {
   screen.on('display-metrics-changed', place);
   screen.on('display-added', place);
   screen.on('display-removed', place);
+  if (LINUX) watchCursor();
+}
+
+// Linux can't forward mouse movement through a click-through window, so the page never learns the pointer
+// is over the orb. Tell it where the pointer is; it makes the window clickable over interactive parts.
+function watchCursor() {
+  let inside = false;
+  setInterval(() => {
+    if (!win || mode === 'full') { inside = false; return; }
+    const p = screen.getCursorScreenPoint(), b = win.getBounds();
+    const now = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+    if (now) win.webContents.send('cursor', { x: p.x - b.x, y: p.y - b.y });
+    else if (inside) win.webContents.send('cursor', null);
+    inside = now;
+  }, 100);
 }
 
 function trayIcon(color) {

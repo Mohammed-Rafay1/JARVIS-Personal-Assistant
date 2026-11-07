@@ -11,7 +11,7 @@ import time
 
 from rapidfuzz import fuzz, process
 
-from ..config import DATA
+from ..config import DATA, WINDOWS
 from . import CTX
 from .base import Result, tool
 
@@ -33,11 +33,16 @@ class AppIndex:
 
     def refresh(self) -> None:
         t = time.perf_counter()
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-StartApps | ConvertTo-Json -Compress"],
-            capture_output=True, text=True, encoding="utf-8", creationflags=NO_WINDOW, timeout=30)
-        items = json.loads(out.stdout or "[]")
+        if WINDOWS:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-StartApps | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, encoding="utf-8", creationflags=NO_WINDOW, timeout=30)
+            items = json.loads(out.stdout or "[]")
+        else:
+            from ..linux import desktop_apps
+
+            items = desktop_apps()
         if isinstance(items, dict):
             items = [items]
         apps = {i["Name"]: i["AppID"] for i in items if i.get("Name") and not _JUNK.search(i["Name"])}
@@ -73,6 +78,10 @@ class AppIndex:
 
     @staticmethod
     def launch(app_id: str) -> None:
+        if not WINDOWS:
+            from ..linux import launch_app
+
+            return launch_app(app_id)
         if re.match(r"^[a-zA-Z]:\\", app_id):
             os.startfile(app_id)
         else:  # Store app IDs, AUMIDs and {KnownFolder}\x.exe paths all launch through AppsFolder
@@ -92,9 +101,6 @@ async def open_app(name: str) -> Result:
 
 def _close_windows(name: str) -> list[str]:
     import psutil
-    import win32con
-    import win32gui
-    import win32process
 
     q = name.lower().replace(" ", "")
     hit = CTX.apps.find(name) if CTX.apps else None
@@ -107,6 +113,16 @@ def _close_windows(name: str) -> list[str]:
                  "visualstudiocode": "code", "teams": "ms-teams", "microsoftteams": "ms-teams",
                  "googlechrome": "chrome", "microsoftedge": "msedge", "edge": "msedge", "fileexplorer": "explorer"}
     targets |= {exe_alias[t] for t in list(targets) if t in exe_alias}
+    if not WINDOWS:
+        from ..linux import close_windows
+
+        found = close_windows(targets, hit[1] if hit else "")
+        log.info("close %r: targets=%s closed=%s", name, sorted(targets), found)
+        return found
+    import win32con
+    import win32gui
+    import win32process
+
     closed: set[str] = set()
 
     def visit(hwnd, _):
