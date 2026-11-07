@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
+from collections import deque
 from typing import Callable
 
 import numpy as np
@@ -26,6 +28,8 @@ class Player:
         self._idle = threading.Event()
         self._idle.set()
         self._stream: sd.OutputStream | None = None
+        # how loud each block just played was (raw RMS, 0-1): the barge-in check predicts Jarvis's own echo
+        self._played: deque[tuple[float, float]] = deque(maxlen=24)
 
     def _ensure_stream(self) -> None:
         if self._stream is None or not self._stream.active:
@@ -50,6 +54,7 @@ class Player:
         out = np.zeros(frames, dtype=np.float32)
         out[:chunk.size] = chunk
         outdata[:, 0] = out
+        self._played.append((time.monotonic(), float(np.sqrt(np.mean(chunk * chunk))) if chunk.size else 0.0))
         # an exception here would make PortAudio stop the stream and leave Jarvis "speaking" forever
         try:
             if chunk.size:
@@ -79,6 +84,13 @@ class Player:
                     return
         self._idle.clear()
         self._q.put(audio.astype(np.float32))
+
+    def reference(self, window: float = 0.4) -> float:
+        """The loudest block played in the last `window` seconds (raw RMS, 0-1). Its echo reaches the mic a
+        little later (sound card buffers, the room), so the window covers that delay."""
+        now = time.monotonic()
+        recent = [r for t, r in list(self._played) if now - t <= window]
+        return max(recent) if recent else 0.0
 
     def wait(self, timeout: float | None = None) -> bool:
         return self._idle.wait(timeout)

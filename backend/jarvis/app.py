@@ -202,6 +202,7 @@ class Jarvis:
         self._speech_gen = 0
         self._barge_echo: list[float] = []
         self._barge_run = 0
+        self._echo_ratios: deque[float] = deque(maxlen=200)  # how much of Jarvis's voice the mic hears
         self._rethink_run = 0
 
     # A question Jarvis asked ("which one?", "shall I send it?") waits for an answer, but not for ever:
@@ -408,6 +409,8 @@ class Jarvis:
                 speaking = self.player.busy
                 if not speaking:  # Jarvis's own voice must not raise the "background noise" level
                     self.endpointer.observe_idle(frame)
+                elif not self.in_call:  # the greeting and other replies teach it its own echo before a call
+                    self._echo_learn(float(np.sqrt(np.mean(frame.astype(np.float32) ** 2))))
                 if speaking and self.in_call and self.cfg["call"].get("barge_in", True):
                     if self._barge_feed(frame):  # you started talking over Jarvis
                         pre = list(self._preroll)[-5:]
@@ -458,24 +461,52 @@ class Jarvis:
                         self._heard = self.endpointer.carry + self.endpointer.frames
                     self.loop.call_soon_threadsafe(self._utterance_ready, audio)
 
+    def _played_now(self) -> float:
+        """How loud Jarvis's voice is right now (raw RMS in mic units), from what the player just played."""
+        ref = getattr(self.player, "reference", None)
+        return float(ref()) * 32768 if callable(ref) else 0.0
+
+    def _echo_learn(self, rms: float) -> None:
+        """While Jarvis speaks: how much of its own voice comes back into the mic (mic level / played level).
+        Only clearly audible moments count, not the quiet start or end of a sentence."""
+        played = self._played_now()
+        if played >= 300:
+            self._echo_ratios.append(rms / played)
+
+    def _echo_k(self) -> float | None:
+        """The share of Jarvis's voice the mic picks up (a high percentile, to stay on the safe side)."""
+        return float(np.percentile(self._echo_ratios, 90)) if len(self._echo_ratios) >= 12 else None
+
     def _barge_feed(self, frame: np.ndarray) -> bool:
-        """True when you start talking over Jarvis. The mic also hears Jarvis through the speakers, so the
-        first ~0.4 s of each reply measures that echo; after that, ~0.3 s of speech clearly louder than the
-        echo counts as you cutting in."""
+        """True when you start talking over Jarvis.
+
+        The mic also hears Jarvis through the speakers. It used to measure that echo once, from the first
+        ~0.4 s of each reply - often the quiet start of a sentence - so a louder word later looked like you
+        cutting in (8 Nov, with the mic boosted 6x: "barge-in (mic 1228 vs echo 255)" twice, mid-answer).
+        Now Jarvis predicts its echo moment by moment from what it is playing and how much of it reaches
+        the mic, and only ~0.3 s of speech clearly louder than that counts: you talking over it, or in the
+        gaps between its words."""
         rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
-        if len(self._barge_echo) < 5:
-            self._barge_echo.append(rms)
-            return False
-        echo = float(np.median(self._barge_echo))
-        need = max(echo * float(self.cfg["call"].get("barge_in_ratio", 2.5)), 900.0)
+        ratio = float(self.cfg["call"].get("barge_in_ratio", 2.5))
+        floor = max(900.0, self.endpointer.noise_floor * 4)
+        k = self._echo_k()
+        if k is not None:
+            echo = k * self._played_now() + self.endpointer.noise_floor
+        else:  # not learnt yet: the first ~0.4 s of this reply, as before
+            if len(self._barge_echo) < 5:
+                self._barge_echo.append(rms)
+                return False
+            echo = float(np.median(self._barge_echo))
+        need = max(echo * ratio, floor)
         if rms > need and self.endpointer.vad_votes(frame) >= 3:
             self._barge_run += 1
         else:
             self._barge_run = 0
-            if rms < need:  # follow slow changes in Jarvis's own loudness
+            if rms < need:  # Jarvis's own voice: keep learning it
                 self._barge_echo = self._barge_echo[-19:] + [rms]
+                self._echo_learn(rms)
         if self._barge_run >= 4:
-            log.info("barge-in (mic %.0f vs echo %.0f)", rms, echo)
+            log.info("barge-in (mic %.0f vs expected echo %.0f)", rms, echo)
             self._barge_echo, self._barge_run = [], 0
             return True
         return False
