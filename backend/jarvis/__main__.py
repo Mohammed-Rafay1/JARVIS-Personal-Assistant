@@ -91,6 +91,7 @@ def main() -> None:
     p = argparse.ArgumentParser(prog="jarvis")
     p.add_argument("--selftest", action="store_true", help="check every component and exit")
     p.add_argument("--calibrate", action="store_true", help="tune the wake word and mic level to your voice")
+    p.add_argument("--quick", action="store_true", help="with --calibrate: the short version (about 2 minutes)")
     p.add_argument("--no-ui", action="store_true", help="run without the overlay (type commands in the console)")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--port", type=int, default=0, help=argparse.SUPPRESS)   # dev: fixed UI bridge port
@@ -106,7 +107,7 @@ def main() -> None:
     if args.calibrate:
         from .calibrate import run
 
-        sys.exit(run(cfg))
+        sys.exit(run(cfg, quick=args.quick))
     if not args.worker:
         lock = _single_instance()
         if lock is None:

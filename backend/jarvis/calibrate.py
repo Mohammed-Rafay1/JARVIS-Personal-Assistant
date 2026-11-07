@@ -149,22 +149,36 @@ def save_config(values: dict) -> None:
 
 
 # ------------------------------------------------------------------ the session
-def run(cfg: dict) -> int:
+def run(cfg: dict, quick: bool = False) -> int:
     from openwakeword.model import Model
 
     from .audio import voiceprint as vp
     from .audio.stt import STT
     from .brain.intents import wake_phrase
 
-    print("\n  JARVIS - voice calibration\n  " + "=" * 52)
-    print("  About 6-8 minutes. Sit where you usually do, about as far from the laptop as usual.")
-    print("  Part 1 is in a quiet room, part 2 with background noise. Each step says what to do.")
+    print("\n  JARVIS - voice calibration" + (" (quick)" if quick else "") + "\n  " + "=" * 52)
+    if quick:
+        print("  About 2 minutes. Sit where you usually do and speak as you normally would to Jarvis.")
+    else:
+        print("  About 6-8 minutes. Sit where you usually do, about as far from the laptop as usual.")
+        print("  Part 1 is in a quiet room, part 2 with background noise. Each step says what to do.")
     model = Model(wakeword_models=[cfg["wake_word"]["model"]], inference_framework="onnx")
     name = next(iter(model.models))
     print("  Loading speech recognition…")
     stt = STT(cfg["stt"]["model"], cfg["stt"]["compute_type"], cfg["stt"]["threads"])
     stt.set_vocabulary(["Spotify", "YouTube", "Chrome", "Excel"])
     sess = Session(model, name)
+
+    if quick:  # one pass: quiet, your voice at three levels, ordinary speech, one command
+        sess.listen("silence", 5, "Step 1 - stay quiet.")
+        sess.wake_takes("quiet-normal", "in your normal voice", 3)
+        sess.wake_takes("quiet-low", "quietly", 2)
+        sess.wake_takes("quiet-loud", "loudly", 2)
+        sess.listen("speech", 8, "Say any sentence aloud (no \"Jarvis\"), e.g. \"Please open my email and check "
+                                 "the latest messages.\"")
+        sess.command("Say in one breath: \"Hey Jarvis, what time is it?\"")
+        print("\n  Working it out (under a minute)…")
+        return _finish(cfg, model, name, stt, sess, vp, wake_phrase)
 
     print("\n  PART 1 of 2 - QUIET ROOM\n  " + "-" * 52)
     print("  Turn off music and videos. Close the door if it's noisy outside.")
@@ -186,7 +200,11 @@ def run(cfg: dict) -> int:
     sess.listen("speech-noise", 10, f"Read this aloud over the noise (no \"Jarvis\"):\n    \"{READ_NOISE}\"")
     sess.command("Say in one breath: \"Hey Jarvis, open Chrome.\"")
     print("\n  You can stop the noise now. Working it out (this takes a minute or two)…")
+    return _finish(cfg, model, name, stt, sess, vp, wake_phrase)
 
+
+def _finish(cfg: dict, model, name: str, stt, sess: Session, vp, wake_phrase) -> int:
+    """Everything after the recordings: choose the settings, check them, show the results, save."""
     # ---- the mic boost, from your voice levels
     peaks = {c: [float(np.max(np.abs(a))) for cc, a in sess.takes if cc == c] for c, _ in sess.takes}
     normal_peaks = peaks.get("quiet-normal", []) + peaks.get("noise-normal", [])
