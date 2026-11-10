@@ -351,23 +351,53 @@ class Jarvis:
     async def _connect_email(self) -> str:
         if not self.cfg["email"]["enabled"]:
             return "off"
-        try:
-            from .tools.gmail import Gmail
-            from .tools.mail_imap import ImapMail
+        self._email_lock = asyncio.Lock()
+        CTX.email_reconnect = self._reconnect_email
+        state = await self._open_email()
+        if state.startswith("error"):
+            # 10 Nov 11:58: Gmail timed out at start-up (the network wasn't up yet) and Jarvis never tried
+            # again, so every email request said "Email isn't connected, run setup email" for good
+            asyncio.create_task(self._email_retry())
+        return state
 
-            # app password (no Google Cloud project) first, then the OAuth route if that was set up instead
-            CTX.gmail = await asyncio.to_thread(ImapMail.connect) or await asyncio.to_thread(Gmail.connect)
-        except Exception as e:
-            log.warning("gmail connect failed: %s", e)
-            CTX.gmail = None
-            return "error (see log)"
-        if CTX.gmail is None:
-            return "not set up"
-        threading.Thread(target=self._safe(CTX.gmail.load_contacts), daemon=True).start()
-        from .services.gmail_watcher import GmailWatcher
+    async def _open_email(self) -> str:
+        async with self._email_lock:
+            if CTX.gmail is not None:
+                return CTX.gmail.me
+            try:
+                from .tools.gmail import Gmail
+                from .tools.mail_imap import ImapMail
 
-        asyncio.create_task(GmailWatcher(CTX.gmail, self.cfg, self._announce_mail).run())
-        return CTX.gmail.me
+                # app password (no Google Cloud project) first, then the OAuth route if that was set up instead
+                CTX.gmail = await asyncio.to_thread(ImapMail.connect) or await asyncio.to_thread(Gmail.connect)
+            except Exception as e:
+                log.warning("gmail connect failed: %s", e)
+                CTX.gmail, CTX.email_error = None, str(e) or e.__class__.__name__
+                return "error (see log)"
+            CTX.email_error = ""
+            if CTX.gmail is None:
+                return "not set up"
+            threading.Thread(target=self._safe(CTX.gmail.load_contacts), daemon=True).start()
+            from .services.gmail_watcher import GmailWatcher
+
+            asyncio.create_task(GmailWatcher(CTX.gmail, self.cfg, self._announce_mail).run())
+            log.info("email connected: %s", CTX.gmail.me)
+            return CTX.gmail.me
+
+    async def _email_retry(self) -> None:
+        """Gmail couldn't be reached: try again in the background, at growing intervals."""
+        delay = 20
+        while CTX.gmail is None and getattr(CTX, "email_error", ""):
+            await asyncio.sleep(delay)
+            if not (await self._open_email()).startswith("error"):
+                return
+            delay = min(delay * 2, 300)
+
+    async def _reconnect_email(self) -> bool:
+        """An email request while Gmail couldn't be reached: try once more right now."""
+        if CTX.gmail is None and getattr(CTX, "email_error", ""):
+            await self._open_email()
+        return CTX.gmail is not None
 
     @staticmethod
     def _safe(fn):

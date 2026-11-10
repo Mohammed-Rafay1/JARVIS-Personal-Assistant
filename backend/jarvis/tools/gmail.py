@@ -28,8 +28,27 @@ NOT_CONNECTED = "Email isn't connected yet. Run setup email from the Jarvis fold
 EMAIL_OFF = "Email is switched off, so I can't read or write mail. Say open Gmail and I'll bring it up in your browser."
 
 
+UNREACHABLE = ("I can't reach Gmail right now, the connection is timing out. I'm retrying in the background, so "
+               "please ask me again in a minute.")
+
+
 def _not_connected() -> str:
-    return NOT_CONNECTED if CTX.cfg.get("email", {}).get("enabled", True) else EMAIL_OFF
+    if not CTX.cfg.get("email", {}).get("enabled", True):
+        return EMAIL_OFF
+    # set up, but Gmail couldn't be reached: don't send the user off to set it up again
+    return UNREACHABLE if getattr(CTX, "email_error", "") else NOT_CONNECTED
+
+
+async def _reconnect() -> bool:
+    """Email asked for while Gmail is unreachable: one more try before saying so."""
+    hook = getattr(CTX, "email_reconnect", None)
+    if hook is None:
+        return False
+    try:
+        return bool(await hook())
+    except Exception:
+        log.exception("email reconnect failed")
+        return False
 
 
 def _store_token(token_json: str) -> None:
@@ -441,7 +460,7 @@ async def revise(p: dict, instruction: str) -> tuple[str, str] | None:
 @tool("Draft an email to someone (it is shown for confirmation, never sent automatically)",
       to="Recipient name or address", about="What the email should say")
 async def draft_email(to: str, about: str) -> Result:
-    if CTX.gmail is None:
+    if CTX.gmail is None and not await _reconnect():
         return Result(_not_connected(), ok=False, icon="mail")
     matches = resolve_recipient(to)
     if not matches:
@@ -467,7 +486,7 @@ _PERIOD_SAID = {"today": " today", "24h": " in the last 24 hours", "yesterday": 
 
 @tool("Check the inbox: who emailed recently", period="today | 24h | yesterday | unread | recent")
 async def check_email(period: str = "today") -> Result:
-    if CTX.gmail is None:
+    if CTX.gmail is None and not await _reconnect():
         return Result(_not_connected(), ok=False, icon="mail")
     q = _PERIOD_QUERY.get(period, "in:inbox newer_than:1d")
     if CTX.cfg.get("email", {}).get("only_primary", True):
@@ -490,7 +509,7 @@ async def check_email(period: str = "today") -> Result:
 
 @tool("Read or summarise the latest email, optionally from a given sender", sender="Sender name, optional")
 async def read_email(sender: str = "") -> Result:
-    if CTX.gmail is None:
+    if CTX.gmail is None and not await _reconnect():
         return Result(_not_connected(), ok=False, icon="mail")
     q = "in:inbox" + (f" from:({sender})" if sender else "")
     msgs = await asyncio.to_thread(CTX.gmail.search, q, 1)
@@ -519,7 +538,7 @@ async def summarise_message(m: dict) -> Result:
 
 @tool("List emails that are waiting for the user's reply and ask which one to answer")
 async def emails_to_reply() -> Result:
-    if CTX.gmail is None:
+    if CTX.gmail is None and not await _reconnect():
         return Result(_not_connected(), ok=False, icon="mail")
     if not hasattr(CTX.gmail, "needs_reply"):
         return Result("I can list unanswered emails once email is connected with an app password.", ok=False, icon="mail")
