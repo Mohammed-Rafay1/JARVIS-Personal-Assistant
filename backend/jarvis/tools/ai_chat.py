@@ -354,7 +354,44 @@ def _bring_to_front(w, name: str = "") -> None:
         raise AppError("error", str(e)) from None
 
 
-def _paste(w, box, text: str) -> None:
+def _box_text(box) -> str | None:
+    """What the message box holds right now (its placeholder when empty); None if the app won't say."""
+    for read in (lambda: box.iface_value.CurrentValue, lambda: box.legacy_properties().get("Value")):
+        try:
+            return re.sub(r"\s+", " ", read() or "").strip()
+        except Exception:
+            continue
+    return None
+
+
+def pasted(have: str | None, text: str, placeholders=()) -> str:
+    """"ok" (the question is in the box), "empty", "wrong" (something else is), or "unknown" (unreadable)."""
+    if have is None:
+        return "unknown"
+    have_l = have.lower()
+    want = re.sub(r"\s+", " ", text).strip().lower()[:60]
+    if want and want in have_l:
+        return "ok"
+    if not have_l or have_l in {p.lower() for p in placeholders}:
+        return "empty"
+    return "wrong"
+
+
+def _set_clipboard(cb, text: str) -> None:
+    cb.OpenClipboard()
+    try:
+        cb.EmptyClipboard()
+        cb.SetClipboardData(cb.CF_UNICODETEXT, text)
+    finally:
+        cb.CloseClipboard()
+
+
+def _paste(w, box, text: str, placeholders=()) -> None:
+    """Paste the question into the box and make sure it's really there before anything is sent.
+
+    10 Nov 15:01: ChatGPT, busy opening the new chat, read the clipboard only after Jarvis had already put the
+    user's own clipboard back (0.6 s later), so it got the user's copied skills list instead of the Hitler
+    question, and that was sent. Now the clipboard is restored only once the box shows the question."""
     import win32clipboard as cb
 
     _bring_to_front(w)
@@ -367,13 +404,29 @@ def _paste(w, box, text: str) -> None:
     try:
         if cb.IsClipboardFormatAvailable(cb.CF_UNICODETEXT):
             previous = cb.GetClipboardData(cb.CF_UNICODETEXT)
-        cb.EmptyClipboard()
-        cb.SetClipboardData(cb.CF_UNICODETEXT, text)
     finally:
         cb.CloseClipboard()
+    state = "empty"
     try:
-        _keys(0x11, 0x56)  # Ctrl+V
-        time.sleep(0.6)
+        for attempt in range(2):
+            if pasted(_box_text(box), text, placeholders) == "wrong":  # a draft or a bad paste: clear it first
+                _keys(0x11, 0x41)  # Ctrl+A
+                _keys(0x2E)        # Delete
+                time.sleep(0.3)
+            _set_clipboard(cb, text)
+            _keys(0x11, 0x56)  # Ctrl+V
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline:
+                time.sleep(0.25)
+                state = pasted(_box_text(box), text, placeholders)
+                if state in ("ok", "unknown"):
+                    break
+            if state == "unknown":  # this app won't show its box: give the paste time before the clipboard changes
+                time.sleep(2.0)
+                break
+            if state == "ok":
+                break
+            log.info("paste attempt %d left the box %s; trying again", attempt + 1, state)
     finally:
         cb.OpenClipboard()
         try:
@@ -382,6 +435,11 @@ def _paste(w, box, text: str) -> None:
                 cb.SetClipboardData(cb.CF_UNICODETEXT, previous)
         finally:
             cb.CloseClipboard()
+    if state not in ("ok", "unknown"):
+        if state == "wrong":  # never leave the wrong text there to be sent by someone pressing Enter
+            _keys(0x11, 0x41)
+            _keys(0x2E)
+        raise AppError("error", f"the question didn't paste correctly (box {state})")
 
 
 def submit(key: str, prompt: str):
@@ -427,7 +485,7 @@ def submit(key: str, prompt: str):
     box = _box(w, app)
     if time.monotonic() > deadline:  # never paste a question minutes after it was asked
         raise AppError("error", f"took over {SEND_WITHIN:.0f}s to get ready")
-    _paste(w, box, prompt)
+    _paste(w, box, prompt, app.boxes)
     sends = _find(w, lambda e: _ctype(e) == "Button" and _name(e).strip().lower() in ("send", "send message",
                                                                                       "send prompt"), tries=6)
     if sends:
