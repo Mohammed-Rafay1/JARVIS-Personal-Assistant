@@ -354,92 +354,201 @@ def _bring_to_front(w, name: str = "") -> None:
         raise AppError("error", str(e)) from None
 
 
-def _box_text(box) -> str | None:
-    """What the message box holds right now (its placeholder when empty); None if the app won't say."""
+def _box_raw(box) -> str | None:
+    """Exactly what the message box holds (spaces included; its placeholder when empty); None if unreadable."""
     for read in (lambda: box.iface_value.CurrentValue, lambda: box.legacy_properties().get("Value")):
         try:
-            return re.sub(r"\s+", " ", read() or "").strip()
+            return read() or ""
         except Exception:
             continue
     return None
 
 
+def _box_text(box) -> str | None:
+    """What the message box holds, spacing tidied; None if the app won't say."""
+    raw = _box_raw(box)
+    return None if raw is None else re.sub(r"\s+", " ", raw).strip()
+
+
+def _quotes(s: str) -> str:
+    """Curly quotes as straight ones (an editor may curl them as they're typed); same length."""
+    return s.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'") \
+        .replace("\xa0", " ")
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", _quotes(s)).strip().lower()
+
+
+def one_line(text: str) -> str:
+    """The question as typed: one line, since a typed newline is Enter, which would send half of it."""
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def pasted(have: str | None, text: str, placeholders=()) -> str:
-    """"ok" (the question is in the box), "empty", "wrong" (something else is), or "unknown" (unreadable)."""
+    """What the box holds compared with the question:
+    "ok" (exactly the question), "empty", "partial" (the start of it: still being typed),
+    "wrong" (anything else, the question twice included), or "unknown" (the app won't say)."""
     if have is None:
         return "unknown"
-    have_l = have.lower()
-    want = re.sub(r"\s+", " ", text).strip().lower()[:60]
-    if want and want in have_l:
+    h, want = _norm(have), _norm(text)
+    if h == want:
         return "ok"
-    if not have_l or have_l in {p.lower() for p in placeholders}:
+    if not h or h in {p.lower() for p in placeholders}:
         return "empty"
+    if want.startswith(h):
+        return "partial"
     return "wrong"
 
 
-def _set_clipboard(cb, text: str) -> None:
-    cb.OpenClipboard()
-    try:
-        cb.EmptyClipboard()
-        cb.SetClipboardData(cb.CF_UNICODETEXT, text)
-    finally:
-        cb.CloseClipboard()
+def _type(text: str) -> None:
+    """Type the text straight into the focused box as Unicode key presses, in one go. No clipboard: on 10 Nov
+    ChatGPT read the clipboard seconds late (once it got the user's own copied text, once the paste landed
+    twice), and typed keys can't be swapped or doubled like that."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wt.WORD), ("wScan", wt.WORD), ("dwFlags", wt.DWORD), ("time", wt.DWORD),
+                    ("dwExtraInfo", ctypes.c_size_t)]
+
+    class _U(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("pad", ctypes.c_byte * 32)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wt.DWORD), ("u", _U)]
+
+    units = text.encode("utf-16-le")
+    codes = [int.from_bytes(units[i:i + 2], "little") for i in range(0, len(units), 2)]
+    events = []
+    for c in codes:
+        for flags in (0x0004, 0x0004 | 0x0002):  # KEYEVENTF_UNICODE, then with KEYEVENTF_KEYUP
+            events.append(INPUT(1, _U(ki=KEYBDINPUT(0, c, flags, 0, 0))))
+    for i in range(0, len(events), 60):  # 30 characters at a time: ChatGPT drops part of a big burst
+        chunk = events[i:i + 60]
+        arr = (INPUT * len(chunk))(*chunk)
+        if U32.SendInput(len(chunk), arr, ctypes.sizeof(INPUT)) != len(chunk):
+            raise AppError("error", "typing was blocked")
+        time.sleep(0.04)
 
 
-def _paste(w, box, text: str, placeholders=()) -> None:
-    """Paste the question into the box and make sure it's really there before anything is sent.
+def _clear_box() -> None:
+    _keys(0x11, 0x41)  # Ctrl+A
+    _keys(0x2E)        # Delete
 
-    10 Nov 15:01: ChatGPT, busy opening the new chat, read the clipboard only after Jarvis had already put the
-    user's own clipboard back (0.6 s later), so it got the user's copied skills list instead of the Hitler
-    question, and that was sent. Now the clipboard is restored only once the box shows the question."""
-    import win32clipboard as cb
 
+def _shows(box, text: str, placeholders, upto: int, wait: float) -> tuple[str, str]:
+    """Wait (up to `wait` s) until the box holds the question's first `upto` characters, or something else.
+    Returns (state, exactly what the box holds: "" when empty)."""
+    end = start = time.monotonic()
+    end += wait
+    last, changed = None, start
+    while True:
+        raw = _box_raw(box)
+        state = pasted(None if raw is None else re.sub(r"\s+", " ", raw).strip(), text, placeholders)
+        have = (raw or "").rstrip("\r\n") if state in ("partial", "ok", "wrong") else ""
+        now = time.monotonic()
+        if have != last:
+            last, changed = have, now
+        stalled = state == "partial" and now - changed > 2.0  # it's taken some, then nothing more for 2 s
+        if state in ("ok", "wrong", "unknown") or (state == "partial" and len(have) >= upto) or stalled \
+                or now >= end:
+            return state, have
+        time.sleep(0.2)
+
+
+def _paste(w, box, text: str, placeholders=(), piece: int = 20) -> None:
+    """Type the question into the box and make sure it's exactly there, once, before anything is sent.
+
+    10 Nov 15:01: ChatGPT read the clipboard late and sent the user's copied skills list. 15:36: the pasted
+    question showed so late that Jarvis pasted again (it landed twice) and then gave up without sending.
+    Now there's no clipboard. ChatGPT drops keys typed faster than it can take them, so the question goes in
+    20 characters at a time, each piece checked in the box before the next; when keys go missing only the
+    missing part is typed again, and wrong text is cleared, never sent."""
+    text = one_line(text)
     _bring_to_front(w)
     box.set_focus()
     time.sleep(0.3)
     if not (_is_front(w) and _has_focus(box)):
         raise AppError("error", f"not safe to type (front={_is_front(w)}, focus={_has_focus(box)})")  # never type elsewhere
-    previous = None
-    cb.OpenClipboard()
-    try:
-        if cb.IsClipboardFormatAvailable(cb.CF_UNICODETEXT):
-            previous = cb.GetClipboardData(cb.CF_UNICODETEXT)
-    finally:
-        cb.CloseClipboard()
-    state = "empty"
-    try:
-        for attempt in range(2):
-            if pasted(_box_text(box), text, placeholders) == "wrong":  # a draft or a bad paste: clear it first
-                _keys(0x11, 0x41)  # Ctrl+A
-                _keys(0x2E)        # Delete
-                time.sleep(0.3)
-            _set_clipboard(cb, text)
-            _keys(0x11, 0x56)  # Ctrl+V
-            deadline = time.monotonic() + 6
-            while time.monotonic() < deadline:
-                time.sleep(0.25)
-                state = pasted(_box_text(box), text, placeholders)
-                if state in ("ok", "unknown"):
-                    break
-            if state == "unknown":  # this app won't show its box: give the paste time before the clipboard changes
-                time.sleep(2.0)
-                break
-            if state == "ok":
-                break
-            log.info("paste attempt %d left the box %s; trying again", attempt + 1, state)
-    finally:
-        cb.OpenClipboard()
-        try:
-            cb.EmptyClipboard()
-            if previous is not None:
-                cb.SetClipboardData(cb.CF_UNICODETEXT, previous)
-        finally:
-            cb.CloseClipboard()
-    if state not in ("ok", "unknown"):
-        if state == "wrong":  # never leave the wrong text there to be sent by someone pressing Enter
-            _keys(0x11, 0x41)
-            _keys(0x2E)
-        raise AppError("error", f"the question didn't paste correctly (box {state})")
+
+    def clear() -> None:
+        _clear_box()
+        if _shows(box, text, placeholders, 0, 5)[0] not in ("empty", "unknown"):
+            time.sleep(1)
+            if pasted(_box_text(box), text, placeholders) not in ("empty", "unknown"):
+                raise AppError("error", "couldn't clear the text in the box")
+
+    if pasted(_box_text(box), text, placeholders) != "empty":  # a leftover draft (or unreadable): start clean
+        clear()
+    have, misses, restarts = "", 0, 0
+    while True:
+        if not _is_front(w):  # never type into whatever is in front now
+            raise AppError("error", "the app went to the back while typing")
+        if not _has_focus(box):
+            box.set_focus()
+            time.sleep(0.3)
+            if not _has_focus(box):
+                raise AppError("error", "the box lost focus")
+        n = len(have)
+        upto = 1 if n == 0 else min(len(text), n + piece)  # the very first letter alone
+        _type(text[n:upto])
+        state, got = _shows(box, text, placeholders, upto, 6)
+        if state == "unknown":  # this app won't show its box: type the rest and give it a moment
+            _type(text[upto:])
+            time.sleep(1.5)
+            return
+        if state == "ok":
+            return
+        if state == "partial" and not _quotes(text).startswith(_quotes(got)):  # e.g. a key landed twice
+            state = "wrong"
+        if state == "wrong":  # keys landed twice or somewhere odd: start over once, else give up
+            log.info("typing: the box went wrong at %d of %d characters", n, len(text))
+            clear()
+            restarts += 1
+            if restarts > 1:
+                raise AppError("error", "the question didn't go into the box correctly")
+            have, misses = "", 0
+            continue
+        if len(got) < upto:  # some keys never arrived
+            misses += 1
+            log.info("typing: %d of %d characters in the box; typing the rest again", len(got), len(text))
+            if misses > 5:
+                clear()
+                raise AppError("error", "the box keeps dropping the typing")
+        elif upto == 1:
+            time.sleep(1.0)  # the first letter swaps the placeholder for text: keys typed meanwhile get lost
+        have = got
+
+
+def _send_buttons(w) -> list:
+    return _find(w, lambda e: _ctype(e) == "Button" and _name(e).strip().lower() in (
+        "send", "send message", "send prompt"), tries=6)
+
+
+def _send(w, box, text: str, placeholders=()) -> None:
+    """Press Send, then check the question really left the box; press it (or Enter) once more if it didn't.
+    The second press is safe: once the box is empty, Send has nothing to send."""
+    text = one_line(text)
+    for attempt in range(2):
+        sends = _send_buttons(w)
+        if sends:
+            _press(sends[-1])
+        elif _is_front(w) and _has_focus(box):
+            _keys(0x0D)  # Enter
+        else:
+            raise AppError("error", "no Send button")
+        end = time.monotonic() + 6
+        while time.monotonic() < end:
+            time.sleep(0.4)
+            state = pasted(_box_text(box), text, placeholders)
+            if state in ("empty", "unknown"):
+                return
+        log.info("send attempt %d: the question is still in the box; pressing again", attempt + 1)
+        _bring_to_front(w)
+        box.set_focus()
+        time.sleep(0.3)
+    raise AppError("error", "the app didn't take the question (it's still in the box)")
 
 
 def submit(key: str, prompt: str):
@@ -486,14 +595,7 @@ def submit(key: str, prompt: str):
     if time.monotonic() > deadline:  # never paste a question minutes after it was asked
         raise AppError("error", f"took over {SEND_WITHIN:.0f}s to get ready")
     _paste(w, box, prompt, app.boxes)
-    sends = _find(w, lambda e: _ctype(e) == "Button" and _name(e).strip().lower() in ("send", "send message",
-                                                                                      "send prompt"), tries=6)
-    if sends:
-        _press(sends[-1])
-    elif _is_front(w) and _has_focus(box):
-        _keys(0x0D)  # Enter
-    else:
-        raise AppError("error", "no Send button")
+    _send(w, box, prompt, app.boxes)
     log.info("%s: question sent", app.name)
     return w
 

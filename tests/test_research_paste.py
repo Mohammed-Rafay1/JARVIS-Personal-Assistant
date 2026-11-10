@@ -1,5 +1,6 @@
-"""10 Nov 15:01, "Research on Adolf Hitler on ChatGPT": ChatGPT read the clipboard late, after Jarvis had already put
-the user's own clipboard back, and the user's copied skills list was sent instead of the question."""
+"""10 Nov, research on ChatGPT. 15:01: ChatGPT read the clipboard late and the user's copied skills list was
+sent instead of the question. 15:36: the paste showed so late that it was pasted again (landed twice) and then
+nothing was sent. Now the question is typed (no clipboard) in checked pieces, and sending is confirmed."""
 import sys
 import types
 from pathlib import Path
@@ -12,99 +13,118 @@ from jarvis.tools import ai_chat  # noqa: E402
 
 QUESTION = ai_chat.research_prompt("adolf hitler")
 SKILLS = "• Large Language Models (LLMs) • Agentic AI • AI Product Development"
+PH = ("ask chatgpt",)
 
 
 @pytest.mark.parametrize("have,state", [
     (QUESTION, "ok"), ("Ask ChatGPT", "empty"), ("", "empty"), (SKILLS, "wrong"), (None, "unknown"),
+    (QUESTION[:40], "partial"), (QUESTION + QUESTION, "wrong"), (QUESTION.replace('"', "“"), "ok"),
 ])
 def test_what_is_in_the_box(have, state):
-    assert ai_chat.pasted(have, QUESTION, ("ask chatgpt",)) == state
+    assert ai_chat.pasted(have, QUESTION, PH) == state
 
 
-class _Clipboard(types.ModuleType):
-    CF_UNICODETEXT = 13
-
-    def __init__(self, text):
-        super().__init__("win32clipboard")
-        self.data = text
-
-    def OpenClipboard(self):
-        pass
-
-    def CloseClipboard(self):
-        pass
-
-    def EmptyClipboard(self):
-        self.data = None
-
-    def IsClipboardFormatAvailable(self, fmt):
-        return self.data is not None
-
-    def GetClipboardData(self, fmt):
-        return self.data
-
-    def SetClipboardData(self, fmt, text):
-        self.data = text
+def test_the_question_is_typed_on_one_line():
+    assert ai_chat.one_line("a\nb  c\n") == "a b c"     # a typed newline would be Enter: half a question sent
 
 
-class _SlowBox:
-    """Like ChatGPT right after a new chat: a Ctrl+V is only handled a moment later, with whatever the
-    clipboard holds by then."""
+class _Box:
+    """ChatGPT's box: shows its placeholder when empty; `drop` = how many typing calls lose their keys."""
 
-    def __init__(self, cb, slow_reads=3):
-        self.cb, self.value, self.queued, self.slow = cb, "Ask ChatGPT", False, slow_reads
+    def __init__(self, value="", drop=()):
+        self.value, self.drop, self.calls, self.focused = value, set(drop), 0, True
 
     def set_focus(self):
-        pass
+        self.focused = True
 
     @property
     def iface_value(self):
-        if self.queued:
-            self.slow -= 1
-            if self.slow <= 0:
-                self.value, self.queued = (self.value if self.value != "Ask ChatGPT" else "") + self.cb.data, False
-        return types.SimpleNamespace(CurrentValue=self.value)
+        return types.SimpleNamespace(CurrentValue=self.value or "Ask ChatGPT")
 
 
 @pytest.fixture
-def setup(monkeypatch):
-    cb = _Clipboard(SKILLS)                       # the user had copied the skills list
-    monkeypatch.setitem(sys.modules, "win32clipboard", cb)
-    box = _SlowBox(cb)
-    pressed = []
+def chat(monkeypatch):
+    box = _Box()
+    sent = []
+
+    def typed(text):
+        box.calls += 1
+        if box.calls not in box.drop:
+            box.value += text
 
     def keys(*vks):
-        pressed.append(vks)
-        if vks == (0x11, 0x56):
-            box.queued = True
         if vks == (0x2E,):
-            box.value = "Ask ChatGPT"
+            box.value = ""                      # Ctrl+A then Delete
+        if vks == (0x0D,):
+            sent.append(box.value)
+            box.value = ""
+    monkeypatch.setattr(ai_chat, "_type", typed)
     monkeypatch.setattr(ai_chat, "_keys", keys)
     monkeypatch.setattr(ai_chat, "_bring_to_front", lambda *a, **k: None)
     monkeypatch.setattr(ai_chat, "_is_front", lambda w: True)
-    monkeypatch.setattr(ai_chat, "_has_focus", lambda e: True)
+    monkeypatch.setattr(ai_chat, "_has_focus", lambda e: e.focused)
     monkeypatch.setattr(ai_chat.time, "sleep", lambda s: None)
-    return cb, box, pressed
+    clock = iter(range(0, 10 ** 7))
+    monkeypatch.setattr(ai_chat.time, "monotonic", lambda: next(clock) * 0.1)
+    return box, sent
 
 
-def test_a_slow_paste_still_gets_the_question_and_the_clipboard_comes_back(setup):
-    cb, box, _ = setup
-    ai_chat._paste(None, box, QUESTION, ("ask chatgpt",))
-    assert box.value == QUESTION                  # not the skills list
-    assert cb.data == SKILLS                      # the user's clipboard is put back afterwards
+def test_typed_once_exactly(chat):
+    box, _ = chat
+    ai_chat._paste(None, box, QUESTION, PH)
+    assert box.value == QUESTION
 
 
-def test_wrong_text_is_cleared_and_never_left_to_send(setup, monkeypatch):
-    cb, box, pressed = setup
-    box.value = SKILLS                            # something else got into the box
-    ai_chat._paste(None, box, QUESTION, ("ask chatgpt",))
-    assert (0x11, 0x41) in pressed and box.value == QUESTION
+def test_dropped_keys_are_typed_again_without_doubling(chat):
+    box, _ = chat
+    box.drop = {2, 5}                           # the burst after the first letter, and a later piece, are lost
+    ai_chat._paste(None, box, QUESTION, PH)
+    assert box.value == QUESTION
 
 
-def test_if_it_never_pastes_nothing_is_sent(setup, monkeypatch):
-    cb, box, _ = setup
-    box.slow = 10 ** 9                            # the paste never lands
-    monkeypatch.setattr(ai_chat.time, "monotonic", iter(range(0, 10 ** 6, 2)).__next__)
+def test_a_leftover_draft_is_cleared_first(chat):
+    box, _ = chat
+    box.value = QUESTION + QUESTION             # what 15:36 left behind
+    ai_chat._paste(None, box, QUESTION, PH)
+    assert box.value == QUESTION
+
+
+def test_never_types_into_another_window(chat, monkeypatch):
+    box, _ = chat
+    monkeypatch.setattr(ai_chat, "_is_front", lambda w: False)
     with pytest.raises(ai_chat.AppError):
-        ai_chat._paste(None, box, QUESTION, ("ask chatgpt",))
-    assert cb.data == SKILLS
+        ai_chat._paste(None, box, QUESTION, PH)
+    assert box.value == ""
+
+
+def test_a_box_that_takes_nothing_is_given_up_on(chat):
+    box, _ = chat
+    box.drop = set(range(1, 100))
+    with pytest.raises(ai_chat.AppError):
+        ai_chat._paste(None, box, QUESTION, PH)
+    assert box.value == ""
+
+
+def test_send_is_confirmed_and_pressed_again_if_ignored(chat, monkeypatch):
+    box, sent = chat
+    box.value = QUESTION
+    presses = []
+    monkeypatch.setattr(ai_chat, "_send_buttons", lambda w: [object()])
+
+    def press(b):                               # the first press is ignored (app still busy), the second sends
+        presses.append(b)
+        if len(presses) == 2:
+            sent.append(box.value)
+            box.value = ""
+    monkeypatch.setattr(ai_chat, "_press", press)
+    ai_chat._send(None, box, QUESTION, PH)
+    assert len(presses) == 2 and sent == [QUESTION] and box.value == ""
+
+
+def test_send_that_never_happens_is_reported(chat, monkeypatch):
+    box, _ = chat
+    box.value = QUESTION
+    monkeypatch.setattr(ai_chat, "_send_buttons", lambda w: [object()])
+    monkeypatch.setattr(ai_chat, "_press", lambda b: None)
+    with pytest.raises(ai_chat.AppError):
+        ai_chat._send(None, box, QUESTION, PH)
