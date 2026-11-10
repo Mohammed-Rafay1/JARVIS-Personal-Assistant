@@ -97,6 +97,15 @@ def test_never_types_into_another_window(chat, monkeypatch):
     assert box.value == ""
 
 
+def test_focus_that_comes_slowly_is_waited_for(chat, monkeypatch):
+    """16:21: the box reported focus only after 0.3 s, and Jarvis said it couldn't safely type."""
+    box, _ = chat
+    checks = []
+    monkeypatch.setattr(ai_chat, "_has_focus", lambda e: checks.append(1) or len(checks) > 6)
+    ai_chat._paste(None, box, QUESTION, PH)
+    assert box.value == QUESTION
+
+
 def test_a_box_that_takes_nothing_is_given_up_on(chat):
     box, _ = chat
     box.drop = set(range(1, 100))

@@ -432,6 +432,51 @@ def _type(text: str) -> None:
         time.sleep(0.04)
 
 
+def _front_title() -> str:
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(120)
+        U32.GetWindowTextW(U32.GetForegroundWindow(), buf, 120)
+        return repr(buf.value[:40])
+    except Exception:
+        return "another window"
+
+
+def _focus_box(w, box) -> bool:
+    """Put the typing cursor in the message box; True once it's really there (and the app is in front).
+
+    16:21: right after New chat the app took longer than 0.3 s to report the box focused, so Jarvis gave up.
+    Now: ask for focus a few times and wait up to a second each; failing that, click inside the box, but only
+    where that point really is the app's own window."""
+    from pywinauto import mouse
+
+    from .whatsapp import _point_is_whatsapp as _point_is_window  # (it checks any window's handle)
+
+    for attempt in range(4):
+        _bring_to_front(w)
+        if attempt < 3:
+            try:
+                box.set_focus()
+            except Exception as e:
+                log.debug("set_focus failed: %s", e)
+        else:
+            try:
+                r = box.rectangle()
+                x, y = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+            except Exception:
+                return False
+            if not (_is_front(w) and _point_is_window(w, x, y)):
+                return False
+            log.info("typing: clicking into the box to focus it")
+            mouse.click(coords=(x, y))
+        end = time.monotonic() + 1.0
+        while time.monotonic() < end:
+            time.sleep(0.1)
+            if _is_front(w) and _has_focus(box):
+                return True
+    return False
+
+
 def _clear_box() -> None:
     _keys(0x11, 0x41)  # Ctrl+A
     _keys(0x2E)        # Delete
@@ -466,11 +511,9 @@ def _paste(w, box, text: str, placeholders=(), piece: int = 20) -> None:
     20 characters at a time, each piece checked in the box before the next; when keys go missing only the
     missing part is typed again, and wrong text is cleared, never sent."""
     text = one_line(text)
-    _bring_to_front(w)
-    box.set_focus()
-    time.sleep(0.3)
-    if not (_is_front(w) and _has_focus(box)):
-        raise AppError("error", f"not safe to type (front={_is_front(w)}, focus={_has_focus(box)})")  # never type elsewhere
+    if not _focus_box(w, box):  # never type elsewhere
+        raise AppError("error", f"not safe to type (front={_is_front(w)}, focus={_has_focus(box)}, "
+                                f"in front: {_front_title()})")
 
     def clear() -> None:
         _clear_box()
@@ -483,13 +526,10 @@ def _paste(w, box, text: str, placeholders=(), piece: int = 20) -> None:
         clear()
     have, misses, restarts = "", 0, 0
     while True:
-        if not _is_front(w):  # never type into whatever is in front now
-            raise AppError("error", "the app went to the back while typing")
-        if not _has_focus(box):
-            box.set_focus()
-            time.sleep(0.3)
-            if not _has_focus(box):
-                raise AppError("error", "the box lost focus")
+        if not (_is_front(w) and _has_focus(box)):  # bring it back and re-check; never type elsewhere
+            log.info("typing: %s took the front; bringing the app back", _front_title())
+            if not _focus_box(w, box):
+                raise AppError("error", f"the app went to the back while typing ({_front_title()} took over)")
         n = len(have)
         upto = 1 if n == 0 else min(len(text), n + piece)  # the very first letter alone
         _type(text[n:upto])
@@ -545,9 +585,7 @@ def _send(w, box, text: str, placeholders=()) -> None:
             if state in ("empty", "unknown"):
                 return
         log.info("send attempt %d: the question is still in the box; pressing again", attempt + 1)
-        _bring_to_front(w)
-        box.set_focus()
-        time.sleep(0.3)
+        _focus_box(w, box)
     raise AppError("error", "the app didn't take the question (it's still in the box)")
 
 
