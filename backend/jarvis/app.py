@@ -116,11 +116,15 @@ def _tidy_spoken(sentence: str) -> str:
     return "" if re.fullmatch(r"\d{1,2}[.)]?|[-•]", s) else s
 
 
+# "not now", "I don't have to send email now", "forget it": the user doesn't want to carry on
+_NOT_NOW = re.compile(r"\b(?:don'?t|do not|no need|not now|never ?mind|forget it|cancel|leave it|skip it|not anymore)\b")
+
+
 def _is_conversation(raw: str, t: str) -> bool:
     lowered = raw.lower().strip(" ,.!")
     if _REQUEST.match(t) or _REQUEST.match(lowered):
         return False
-    return (raw.rstrip().endswith("?") or len(t.split()) >= 11
+    return ("?" in raw or len(t.split()) >= 11
             or bool(_CONVERSATION.match(t)) or bool(_CONVERSATION.match(lowered)))
 
 
@@ -896,6 +900,16 @@ class Jarvis:
             if intent.tool == "play_it":
                 results.append(await self._play_it())
                 continue
+            if intent.tool == "email_status":
+                from .tools.gmail import _not_connected, _reconnect
+
+                if CTX.gmail is not None or await _reconnect():
+                    results.append(Result(f"Yes, {self.cfg['address_as']}, email is connected to {CTX.gmail.me}. "
+                                          "Tell me who to email and what to say, and I'll draft it for you to "
+                                          "check before it goes.", icon="mail"))
+                else:
+                    results.append(Result(_not_connected(), ok=False, icon="mail"))
+                continue
             if intent.tool == "office_open":  # Excel / Word: new or existing, then edits in plain words
                 results.append(await self._office_open(intent.args["app"], intent.args.get("mode", ""),
                                                        intent.args.get("query", "")))
@@ -1217,13 +1231,20 @@ class Jarvis:
             if STOP.match(t):
                 self.pending = None
                 return False
-            if NO.match(t):
+            if NO.match(t) or _NOT_NOW.search(t):  # "I don't have to send email now"
                 self.pending = None
                 await self.say("Alright, no email.", then_idle=True)
                 return True
             from .tools.gmail import resolve_recipient
 
             addr = _spoken_email(raw) or (raw.strip() if re.fullmatch(r"[^@\s]+@[^@\s]+\.\w+", raw.strip()) else "")
+            other = parse(t)
+            if not addr and (_is_conversation(raw, t) or len(t.split()) > 4
+                             or (other is not None and other.tool not in _WEAK)):
+                # 10 Nov: "who are u", "I'm asking who are you?" and "Jarvis listen to me" were each looked up
+                # as a person's name ("I don't have an address for that name") - a new request, not a name
+                self.pending = None
+                return False
             matches = [(addr, addr)] if addr else resolve_recipient(re.sub(r"^(?:to |email |send it to )", "", t))
             if len(matches) == 1:
                 name, addr = matches[0]
@@ -1235,6 +1256,12 @@ class Jarvis:
                 self.pending = None
                 await self._deliver([await self.run_tool("draft_email", {"to": t, "about": ""})])
                 return True
+            if p.get("asked"):  # asked once already: stop rather than loop
+                self.pending = None
+                await self.say(f"I still don't have an address for {raw.strip().rstrip('.?!')}. Send me their email "
+                               "address whenever you want to email them.", then_idle=True)
+                return True
+            self.pending = {**p, "asked": True}
             self.ui.send({"type": "focus_input", "placeholder": "Type the email address, then Enter…"})
             await self.say("I don't have an address for that name. Please "
                            + ("send me" if self._remote_said is not None else "type") + " their email address.",

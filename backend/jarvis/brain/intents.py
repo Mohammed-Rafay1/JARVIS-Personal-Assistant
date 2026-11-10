@@ -339,6 +339,10 @@ def _email_period(t: str) -> str:
 
 
 def _email(t: str) -> Intent | None:
+    # "email is connected now? you can send the email", "is my email working" (10 Nov, after a reconnect)
+    if len(t.split()) <= 14 and re.search(r"\b(?:e-?mails?|gmail) (?:is |are )?(?:connected|working|set up|linked|"
+                                          r"back|fixed|okay|ok)\b|\bconnected (?:to|my|the) (?:e-?mail|gmail)\b", t):
+        return Intent("email_status")
     # "which emails do I need to reply to", "any emails I have to answer", "what's waiting for my reply"
     if len(t.split()) <= 14 and (
             re.search(r"\b(?:e-?mails?|mails?|messages?|inbox)\b", t) and re.search(r"\b(?:reply|replies|respond|answer|get back)", t)
