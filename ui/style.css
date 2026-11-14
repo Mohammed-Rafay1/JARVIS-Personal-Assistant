@@ -18,6 +18,10 @@
   --hud: calc(var(--orb) * 1.55);
 }
 
+/* the state colour fades from one to the next instead of jumping */
+@property --accent { syntax: '<color>'; inherits: true; initial-value: #00B7FF; }
+:root { transition: --accent 600ms ease; }
+
 * { box-sizing: border-box; }
 html, body {
   margin: 0; width: 100%; height: 100%; overflow: hidden;
@@ -88,6 +92,9 @@ body.state-thinking #dock-hud .sweep { animation-duration: 1.3s; opacity: .85; }
 body.state-acting #dock-hud .arcs { animation-duration: 1.6s; }
 body.state-speaking #dock-hud .arcs { animation-duration: 2.2s; }
 body.state-speaking #dock-hud .glow { animation-duration: 1.1s; }
+/* resting in the corner: the rings hold still (the orb itself still breathes). Five endless spins kept this
+   always-on-top window repainting 60 times a second, which made the whole laptop feel laggy. */
+body.dock.state-idle #dock-hud *, body.dock.muted #dock-hud * { animation-play-state: paused; }
 body.state-offline #dock-hud, body.muted #dock-hud { opacity: .6; }
 body.state-offline #dock-hud .sweep, body.muted #dock-hud .sweep { display: none; }
 body.muted #dock-hud .arcs { animation-play-state: paused; }

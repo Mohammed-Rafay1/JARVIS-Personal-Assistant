@@ -18,7 +18,9 @@ contextBridge.exposeInMainWorld('host', {
   snapshot: () => ipcRenderer.send('snapshot'),
   setMode: (m) => ipcRenderer.send('mode', m),
   quit: () => ipcRenderer.send('quit'),
+  board: (m) => ipcRenderer.send('board', m),
+  menu: (m) => ipcRenderer.send('orb-menu', m),
   on: (channel, cb) => {
-    if (['hotkey', 'mute', 'quit', 'spot'].includes(channel)) ipcRenderer.on(channel, (_e, v) => cb(v));
+    if (['hotkey', 'mute', 'quit', 'spot', 'board-request'].includes(channel)) ipcRenderer.on(channel, (_e, v) => cb(v));
   },
 });

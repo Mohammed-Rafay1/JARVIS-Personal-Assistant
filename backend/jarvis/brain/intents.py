@@ -1,4 +1,4 @@
-"""Deterministic intent engine: the primary path for commands.
+﻿"""Deterministic intent engine: the primary path for commands.
 
 Fast (<1 ms), works without the LLM, and predictable. Anything it can't parse goes to the LLM.
 """
@@ -31,7 +31,7 @@ _POLITE_POST = re.compile(r"[\s,]*\b(?:please|for me|now|thanks|thank you|jarvis
 
 
 def normalize(text: str) -> str:
-    t = text.lower().replace("’", "'").replace("‘", "'")
+    t = text.lower().replace("â€™", "'").replace("â€˜", "'")
     t = re.sub(r"(?<=\d),(?=\d{3})", "", t)            # 4,500 -> 4500
     t = re.sub(r"[^\w\s@.'%\-:]", " ", t)
     t = re.sub(r"(?<!\w)\.|\.(?!\w)", " ", t)          # drop sentence dots, keep dots inside domains/emails
@@ -711,6 +711,101 @@ _IN_BROWSER = re.compile(r"\s+(?:on|in|using|with|through)\s+(?:the |my )?"
 _WEB_TOOLS = {"open_website", "web_search", "play_youtube", "web_research"}
 
 
+# ---------------------------------------------------------------------------- the board and today's list
+_BOARD_WORD = r"(?:board|dashboard|status board|daily board|hud|overview|status screen|command (?:center|centre))"
+_LIST_WORD = r"(?:to ?do(?:s| list)?|to-do(?:s| list)?|tasks?|task list|list|checklist|board)"
+_TODAY = r"(?: for today| today| for the day)?"
+BOARD_TOOLS = {"board_show", "board_hide", "briefing", "todo_list", "plan_day", "plan_items", "todo_add", "todo_done",
+               "todo_undo", "todo_remove", "todo_clear_done", "board_run", "reminder", "reminder_list",
+               "focus_start", "focus_stop"}
+
+
+def _board(t: str) -> Intent | None:
+    t = re.sub(r"\bto-do\b", "to do", t)
+    # reminders: "remind me at 5 to call Ali", "remind me to stretch in 20 minutes"
+    if re.fullmatch(r"(?:what are|show(?: me)?|list|tell me|read)(?: all)?(?: of)? my reminders(?: for today| today)?|"
+                    r"(?:any|my) reminders(?: today)?|do i have (?:any )?reminders(?: today| set)?", t):
+        return Intent("reminder_list")
+    if re.match(r"^(?:set (?:a |an )?reminder|remind me|add (?:a )?reminder)\b", t):
+        return Intent("reminder", {"text": re.sub(r"^add (?:a )?reminder", "reminder", t)})
+    # focus sessions
+    if re.fullmatch(r"(?:stop|end|cancel|turn off|disable|exit|finish) (?:the |my )?(?:focus|pomodoro|deep work)"
+                    r"(?: mode| session| timer)?", t):
+        return Intent("focus_stop")
+    if re.fullmatch(r"(?:(?:start|begin|turn on|enable|let's (?:do|start)|lets (?:do|start)|i want|i need|give me|set)"
+                    r" )?(?:a |an |the |my )?(?:focus|pomodoro|deep work)(?: mode| session| timer| time| block)?"
+                    r"(?: (?:for|of) .+)?", t) or re.fullmatch(r"(?:i need to|let me|time to) focus(?: for .+)?", t):
+        return Intent("focus_start", {"text": t})
+    # the board itself
+    if re.fullmatch(r"(?:close|hide|dismiss|remove|minimi[sz]e|clear|exit|put away) (?:the |my |this |that )?"
+                    r"(?:" + _BOARD_WORD + r"|status|briefing|status report|to ?do list|to ?dos)", t):
+        return Intent("board_hide")
+    if re.fullmatch(r"(?:give me |start |do )?(?:my |the |a )?(?:morning|daily) (?:briefing|brief|report|update)|"
+                    r"brief me(?: on (?:my |the )?day)?|(?:give me )?(?:a |my |the )?briefing|good morning(?: jarvis)?"
+                    r"(?: what's (?:the plan|up)(?: today)?)?", t):
+        return Intent("briefing")
+    if re.fullmatch(r"(?:(?:show|open|bring up|display|pull up|launch|give|put up|load)(?: me)? (?:up )?(?:the |my )?"
+                    + _BOARD_WORD + r"(?: up)?|" + _BOARD_WORD +
+                    r"|(?:what(?:'s| is) )?my (?:status|daily status|status for today|day)|"
+                    r"(?:give|show)(?: me)? (?:my |the )?(?:status|daily status|status report|summary of (?:my |the )?day)"
+                    r"|status report|(?:what(?:'s| is) )?(?:the )?(?:status|update) (?:for |of )?today|"
+                    r"what(?:'s| is) on my (?:plate|agenda)(?: today)?|how(?:'s| is) my day(?: looking)?(?: today)?|"
+                    r"(?:give me|show me) (?:an |the )?overview|where do (?:i|we) stand(?: today)?)", t):
+        return Intent("board_show", {"view": "all"})
+    if re.fullmatch(r"(?:(?:show|open|read|tell|give|bring up|display|read out)(?: me)? (?:my |the |today's )?"
+                    r"(?:to ?dos?|to ?do list|tasks|task list|list|checklist)" + _TODAY +
+                    r"|what(?:'s| is) (?:on )?(?:my |the )?(?:to ?do )?list" + _TODAY +
+                    r"|what do i (?:have|need|still need|still have) to do" + _TODAY +
+                    r"|what(?:'s| is) (?:still )?(?:left|pending|remaining)(?: to do)?(?: for today| today| on my list)?"
+                    r"|(?:my )?to ?do(?:s| list)" + _TODAY + r"|what are my tasks" + _TODAY +
+                    r"|what(?:'s| is) (?:on )?(?:the |my )?agenda" + _TODAY + r"|how many (?:things|tasks) are left)", t):
+        return Intent("todo_list")
+    m = re.match(r"^(?:today i(?:'ll| will| need to| have to| want to| got to| gotta| should| must| am going to|'m going to)|"
+                 r"for today i (?:need|have|want)(?: to)?|my (?:plan|to ?dos?|to ?do list|tasks?)(?: for today| today)? "
+                 r"(?:is|are|will be)|today's plan is|the plan (?:for today )?is|plan for today(?: is)?|"
+                 r"here(?:'s| is) (?:my|the) (?:plan|list)(?: for today)?|add (?:these|this|the following)(?: things)? "
+                 r"to (?:my |the )?(?:to ?do )?list|things (?:i need )?to do today(?: are)?)[\s:,-]+(?P<x>.+)$", t)
+    if m:
+        return Intent("plan_items", {"text": m.group("x")})
+    if re.fullmatch(r"(?:let's |lets |help me |can you help me )?plan (?:my |the |out my |out the )?(?:day|today)|"
+                    r"plan today|(?:make|create|build|set up) (?:my |a |today's |the )?(?:to ?do list|plan|list)"
+                    r"(?: for today)?|start my day|let's start the day|lets start the day|plan my to ?dos?", t):
+        return Intent("plan_day")
+    m = re.match(r"^(?:add|put|write|note|jot)(?: down)? (?P<x>.+?) (?:to|on|in|into|onto) (?:my |the |today's )?"
+                 + _LIST_WORD + _TODAY + r"$", t) or \
+        re.match(r"^(?:add (?:a |an )?(?:task|to ?do|item)|new (?:task|to ?do)|to ?do)(?: to (?:my |the )?list)?"
+                 r"[\s:,-]+(?P<x>.+)$", t)
+    if m:
+        return Intent("todo_add", {"text": m.group("x")})
+    m = re.match(r"^(?:remove|delete|drop|scratch|take) (?P<x>.+?) (?:from|off|out of) (?:my |the |today's )?"
+                 + _LIST_WORD + r"$", t)
+    if m:
+        return Intent("todo_remove", {"text": m.group("x")})
+    if re.fullmatch(r"(?:clear|remove|delete|hide) (?:all )?(?:the )?(?:completed|done|finished|ticked) "
+                    r"(?:tasks|items|ones|to ?dos|things)(?: from (?:my |the )?list)?", t):
+        return Intent("todo_clear_done")
+    m = re.match(r"^(?:untick|uncheck|unmark|reopen) (?P<x>.+?)(?: (?:on|from) (?:my |the )?" + _LIST_WORD + ")?$", t) \
+        or re.match(r"^(?P<x>.+?) (?:isn't|is not|wasn't|was not|hasn't been) (?:done|finished|complete|completed)"
+                    r"(?: yet)?$", t)
+    if m and not re.fullmatch(r"(?:it|that|this|the last (?:change|thing|edit))", m.group("x")):
+        return Intent("todo_undo", {"text": m.group("x")})
+    m = (re.match(r"^mark (?P<x>.+?) (?:as )?(?:done|complete|completed|finished)$", t)
+         or re.match(r"^(?:tick|check|cross|strike)(?: off)? (?P<x>.+?)(?: off)?(?: (?:on|from) (?:my |the )?"
+                     + _LIST_WORD + r")?$", t) if re.match(r"^(?:mark|tick|cross|strike|check off)\b", t) else None) \
+        or re.match(r"^(?:i(?:'ve| have)? (?:just |already |finally )?(?:done|finished|completed)|(?:just |already )?"
+                    r"(?:done|finished) with|done with|finished with) (?P<x>.+)$", t) \
+        or re.match(r"^(?P<x>(?!is |are |it |that |this |everything |all )\S.*?) (?:is|are|has been|have been) "
+                    r"(?:done|finished|complete|completed|sorted)(?: now| already)?$", t)
+    if m:
+        return Intent("todo_done", {"text": m.group("x")})
+    if re.fullmatch(r"(?:(?:ok |okay |yes |alright )?(?:start|begin|do|go ahead with|get on with|work on|handle|"
+                    r"take care of|run) (?:on )?(?:your|the jarvis|jarvis's|jarvis|those|these|the|my) "
+                    r"(?:tasks|items|jobs|things|part|side|ones|to ?dos|work)(?: now| please)?|start on (?:those|them|it)|"
+                    r"do (?:those|them)(?: now| for me)?|you can start(?: now)?|start working)", t):
+        return Intent("board_run")
+    return None
+
+
 def parse(text: str, default_service: str = "youtube",
           resolve_open: Callable[[str, str], Intent] | None = None) -> Intent | None:
     """Like _parse, plus "... on/in Chrome": the browser becomes an argument instead of part of the name."""
@@ -775,6 +870,9 @@ def _parse(text: str, default_service: str = "youtube",
             return hit
     if _SEARCH_LAST.match(t):
         return Intent("search_last")
+    hit = _board(t)  # first: "remind me to email Sara" is a reminder, not an email
+    if hit:
+        return hit
     hit = (_office(t) or _whatsapp(t) or _claude(t) or _email(t) or _liked(t) or _play(t, default_service)
            or _find_file(t) or _weather(t) or _research(t))
     if hit:

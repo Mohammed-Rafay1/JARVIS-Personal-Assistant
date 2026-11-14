@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ws://127.0.0.1:*">
+<title>JARVIS · Command Center</title>
+<link rel="stylesheet" href="board.css">
+</head>
+<body class="booting">
+  <div id="bg" aria-hidden="true"></div>
+  <div id="scan" aria-hidden="true"></div>
+
+  <header id="top">
+    <div class="brand">
+      <svg class="emblem" viewBox="0 0 64 64" aria-hidden="true">
+        <circle cx="32" cy="32" r="29" class="e-out"/>
+        <circle cx="32" cy="32" r="22" class="e-mid"/>
+        <circle cx="32" cy="32" r="22" class="e-arc"/>
+        <circle cx="32" cy="32" r="9" class="e-core"/>
+        <path d="M32 1v6M32 57v6M1 32h6M57 32h6" class="e-tick"/>
+      </svg>
+      <div>
+        <div class="name">J.A.R.V.I.S</div>
+        <div class="tag"><span class="led"></span><span id="tagline">Tactical daily overview</span></div>
+      </div>
+    </div>
+    <div class="clock">
+      <div id="time">--:--<span id="sec">--</span></div>
+      <div id="date">&nbsp;</div>
+    </div>
+    <div class="right">
+      <div class="hello">
+        <div id="greeting">&nbsp;</div>
+        <div id="weather" class="weather"></div>
+      </div>
+      <button id="close" class="x-btn" title="Close (Esc)" aria-label="Close the board">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav id="tabs" aria-label="Board views">
+    <button data-view="all" class="on"><b>01</b>Overview</button>
+    <button data-view="todos"><b>02</b>Today</button>
+    <button data-view="emails"><b>03</b>Inbox</button>
+    <button data-view="projects"><b>04</b>Projects</button>
+  </nav>
+
+  <main id="panels">
+    <section class="panel" id="p-inbox" data-view="emails">
+      <div class="ph">
+        <svg class="pi" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 7l9 6 9-6"/></svg>
+        <h2>Inbox</h2><span class="chip" id="inbox-badge"></span><span class="code">COM.01 · 24H</span>
+      </div>
+      <div class="pb scroll" id="inbox"></div>
+    </section>
+
+    <section class="panel" id="p-mission" data-view="todos">
+      <div class="mission-head">
+        <div class="ringbox">
+          <svg class="ring" viewBox="0 0 140 140" aria-hidden="true">
+            <g id="ring-ticks"></g>
+            <circle class="inner" cx="70" cy="70" r="44"/>
+          </svg>
+          <div class="ring-text"><div id="ring-pct">0%</div><div id="ring-num">0/0 DONE</div></div>
+        </div>
+        <div class="mission-title">
+          <div class="eyebrow">OPS.00 · Today's mission</div>
+          <h2 id="mission-sub">Nothing planned yet</h2>
+          <div class="split"><span><i class="dot you"></i>Yours <b id="n-you">0</b></span>
+            <span><i class="dot me"></i>Jarvis <b id="n-me">0</b></span></div>
+          <button id="run" class="cta hidden"><svg viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z"/></svg>Start my tasks</button>
+        </div>
+      </div>
+      <div class="pb scroll" id="mission">
+        <div class="group" id="g-you"><div class="gh"><span>Your tasks</span></div><ul id="you"></ul></div>
+        <div class="group" id="g-me"><div class="gh me"><span>Jarvis is handling</span></div><ul id="me"></ul></div>
+        <div class="empty hidden" id="mission-empty">
+          <svg viewBox="0 0 48 48" class="empty-ico"><circle cx="24" cy="24" r="18"/><circle cx="24" cy="24" r="6"/><path d="M24 2v8M24 38v8M2 24h8M38 24h8"/></svg>
+          <div>No mission set for today.</div>
+          <div class="sub">Tell me what's on: say it, type it below, or send it on WhatsApp.</div>
+        </div>
+      </div>
+      <form id="add" autocomplete="off">
+        <span class="plus">&gt;</span>
+        <input id="add-text" placeholder="Add to today… e.g. call Ali, research AI agents on ChatGPT">
+        <kbd>ENTER</kbd>
+      </form>
+    </section>
+
+    <section class="panel" id="p-projects" data-view="projects">
+      <div class="ph">
+        <svg class="pi" viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>
+        <h2>Claude Code</h2><span class="chip live-chip" id="proj-badge"></span><span class="code">DEV.03</span>
+      </div>
+      <div class="pb scroll" id="projects"></div>
+    </section>
+
+    <section class="panel" id="p-systems" data-view="all">
+      <div class="ph">
+        <svg class="pi" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg>
+        <h2>Systems</h2><span class="code" id="net">NET --</span>
+      </div>
+      <div class="pb gauges" id="gauges"></div>
+    </section>
+
+    <section class="panel" id="p-timeline" data-view="all">
+      <div class="ph">
+        <svg class="pi" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <h2>Timeline</h2><span class="code">TMP.05</span>
+      </div>
+      <div class="pb scroll">
+        <div id="focus" class="focus"></div>
+        <div class="tl-h">Reminders</div>
+        <ul id="reminders" class="tl"></ul>
+        <div class="tl-h">Activity log</div>
+        <ul id="activity" class="tl"></ul>
+      </div>
+    </section>
+  </main>
+
+  <footer id="caption">
+    <span class="who" id="who">SYS</span>
+    <div id="said">Say “Hey Jarvis” · “I've called Ali” · “Remind me at 5 to…” · “Start a focus session”</div>
+    <div class="keys"><kbd>1</kbd>–<kbd>4</kbd> views · <kbd>ESC</kbd> close</div>
+  </footer>
+
+  <script type="module" src="board.js"></script>
+</body>
+</html>

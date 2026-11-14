@@ -4,11 +4,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import secrets
 import subprocess
 import sys
 
-from .config import ROOT, load_config, setup_logging
+# Before numpy loads: its maths library (OpenBLAS) keeps a pool of worker threads spinning after every small
+# calculation, and the wake-word listener does one every 80 ms, so three cores sat ~25% busy while Jarvis was
+# idle and the laptop felt laggy. These sums are tiny; one thread does them as fast.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
+from .config import ROOT, load_config, setup_logging  # noqa: E402
 from .priority import boost_priority
 
 log = logging.getLogger("jarvis")

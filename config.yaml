@@ -147,6 +147,15 @@ websites:
 ui:
   idle_dock: true            # small orb in the corner when idle (false = hide completely)
 
+board:                       # "show my board": today's list, inbox, projects, systems on one glass screen
+  enabled: true
+  morning: true              # open the board, brief you and ask today's plan (out loud and on WhatsApp)
+  morning_at: "09:00"        # the first time Jarvis is on after this (and before morning_until)
+  morning_until: "14:00"
+  evening: true              # end-of-day wrap-up: what got done, what moves to tomorrow
+  evening_at: "18:30"
+  remind_on_whatsapp: true   # reminders also arrive on WhatsApp
+
 whatsapp_remote:             # command Jarvis from your phone: text or voice notes on WhatsApp
   enabled: true
   self_chat: true            # your "Message yourself" chat on the linked WhatsApp account works as a remote

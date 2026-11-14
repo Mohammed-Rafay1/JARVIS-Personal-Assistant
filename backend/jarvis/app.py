@@ -18,7 +18,8 @@ from . import tools
 from .audio import earcons
 from .audio.meter import levels
 from .audio.mic import SAMPLE_RATE as MIC_SR
-from .brain.intents import NO, STOP, YES, Intent, normalize, parse, parse_choice
+from .brain.intents import BOARD_TOOLS, NO, STOP, YES, Intent, normalize, parse, parse_choice
+from .services import board as board_words
 from .config import load_contacts
 from .tools import CTX, office
 from .tools.base import REGISTRY, Result, llm_tools
@@ -51,6 +52,10 @@ CAPABILITIES = [
                                         "Ask Claude Code in Solvix to build a login page",
                                         "Is Claude Code done? · Stop Claude Code"]),
     ("WhatsApp", ["WhatsApp Ali that I'm running late", "Send a WhatsApp message to Sara", "Then: “send it” or “no”"]),
+    ("Your day (the board)", ["Show my board · Brief me · Close the board",
+                              "Today I need to call Ali, finish the report and research X on ChatGPT",
+                              "I've called Ali · Mark the report as done · What's left?",
+                              "Remind me at 5 to call Ali · Start a focus session for 45 minutes"]),
     ("Quick answers", ["What's 18% of 4,500?", "What time is it?", "Tell me something about space"]),
     ("During a call", ["Just start talking to interrupt me, even while I'm thinking",
                        "Say “bye” to end · Esc or ✕ to close",
@@ -149,7 +154,10 @@ _THEN = re.compile(r"\s+(?:and then|then|and also|and)\s+(?=(?:open|launch|start
 _PENDING_TTL = {"send_email": 900, "wa_send": 900, "claude_send": 600, "email_list": 600, "reply_list": 600,
                 "choose_file": 300, "choose_recipient": 300, "need_address": 300, "email_recipient": 300,
                 "email_content": 300, "wa_content": 300, "wa_recipient": 300, "reply_text": 300,
-                "office_mode": 300, "office_file": 300, "office_pick": 300, "office_name": 600, "office_close": 300}
+                "office_mode": 300, "office_file": 300, "office_pick": 300, "office_name": 600, "office_close": 300,
+                # the morning question stays open for hours: you might answer from your phone at lunch
+                "plan_today": 4 * 3600, "board_start": 1800, "board_guided": 1800, "todo_confirm": 300,
+                "board_walk": 600}
 # answers to Jarvis's own question that still count as a new command when they parse as one
 _WEAK = ("open_any", "open_file", "find_file")
 # "change it to ...", "ask it to ...": a reworded task, not a new command
@@ -170,6 +178,7 @@ class Jarvis:
         self._pending_at = 0.0
         self._last_question = ""      # the last question the language model answered ("search it" looks it up)
         self.remote = None            # the WhatsApp link, once started (reports finished Claude Code tasks)
+        self.board = None             # today's plan, inbox and projects on one screen (services/briefing.py)
         # up to five exchanges (trimmed in _chat): enough to hold a conversation, quick on this CPU
         self.history: deque[dict] = deque()
         self._last_chat = 0.0
@@ -336,6 +345,10 @@ class Jarvis:
             self.remote = WhatsAppRemote(self.cfg, self)
             asyncio.create_task(self.remote.run())
             health["whatsapp"] = "remote on"
+        from .services.briefing import Board
+
+        self.board = Board(self)
+        asyncio.create_task(self.board.run())  # reminders, focus timer, morning briefing, evening wrap-up
         self.mode = "wake"
         self._set_state("idle")
         self._status("Ready", ready=True, health=health)
@@ -652,6 +665,8 @@ class Jarvis:
             self.in_call = True
             self.call_turns = 0
             self.ui.send({"type": "call", "value": "start", "source": source})
+            if self.board is not None and self.board.open:  # talking about the board: keep it in view
+                self.ui.send({"type": "call", "value": "mini"})
             self.ducker and asyncio.get_running_loop().run_in_executor(None, self.ducker.duck)
             self.player.play(earcons.WAKE)
             asyncio.create_task(self._warm_llm())  # load the model while you're still talking
@@ -839,10 +854,20 @@ class Jarvis:
             handled = await self._handle_pending(t, text)
             if handled:
                 return
-        parts = _THEN.split(t) if " and " in t or " then " in t else [t]
-        intents = [parse(p, self.cfg["music"]["default_service"], self._resolve_open) for p in parts]
-        if len(parts) > 1 and not all(intents):
-            intents = [parse(t, self.cfg["music"]["default_service"], self._resolve_open)]
+        whole = parse(t, self.cfg["music"]["default_service"], self._resolve_open)
+        if whole is not None and whole.tool in BOARD_TOOLS:
+            # "today I need to call Ali and email Sara" is one plan, not a call plus an email to start now
+            parts, intents = [t], [whole]
+        else:
+            parts = _THEN.split(t) if " and " in t or " then " in t else [t]
+            intents = [parse(p, self.cfg["music"]["default_service"], self._resolve_open) for p in parts]
+            if len(parts) > 1 and not all(intents):
+                intents = [whole]
+        if intents == [None] and self.board is not None and board_words.done_statement(t):
+            done = self.board.complete(t, explicit=False)  # "I've called Ali": tick it off
+            if done is not None:
+                await self._deliver([done])
+                return
         if intents == [None] and re.search(r"\b(?:tell me about|about|status|update|updates|how is|how's|progress|"
                                            r"what about|brief me on|what's happening)\b", t):
             # "tell me about Hackathon": a project name the patterns can't know, so check the real list
@@ -875,6 +900,18 @@ class Jarvis:
             return
         results = []
         for intent in intents:
+            if intent.tool == "board_run":
+                await self.board_run()
+                return
+            if intent.tool in BOARD_TOOLS:
+                if intent.tool == "todo_add" and office.active():  # "add the totals to the list": an edit
+                    await self._office_edit(text)
+                    return
+                r = await self._board_intent(intent, text)
+                if r is None:  # it spoke for itself (the briefing)
+                    return
+                results.append(r)
+                continue
             if intent.tool == "stop":
                 self.pending = None
                 self.ui.send({"type": "card", "kind": "clear"})
@@ -968,6 +1005,12 @@ class Jarvis:
                     results.append(Result("What should I look up? Say search, then the topic."))
                 continue
             results.append(await self.run_tool(intent.tool, intent.args))
+            # "which emails did I get?", "status of my projects?": on the laptop, the board shows just that
+            view = {"check_email": "emails", "claude_projects": "projects"}.get(intent.tool)
+            if view and results[-1].ok and self.board is not None and self.board.enabled \
+                    and self._remote_said is None:
+                await self.board.show(view, focus=False, fresh=True)
+                results[-1].card = None
         await self._deliver(results)
 
     async def run_tool(self, name: str, args: dict) -> Result:
@@ -1046,6 +1089,8 @@ class Jarvis:
     async def _handle_pending(self, t: str, raw: str) -> bool:
         p = self.pending
         kind = p["kind"]
+        if kind in ("plan_today", "board_start", "board_guided", "todo_confirm", "board_walk") and self.board is not None:
+            return await self._board_pending(p, t, raw)
         if kind == "song_query":  # answer to "Which song should I play?"
             self.pending = None
             if NO.match(t):
@@ -1535,6 +1580,216 @@ class Jarvis:
         await self._deliver([r])
         return True
 
+    # ------------------------------------------------------------------ the board
+    async def _board_intent(self, intent: Intent, raw: str) -> Result | None:
+        """A board / to-do / reminder / focus command. None when it already spoke for itself."""
+        b, a, tool = self.board, intent.args, intent.tool
+        if b is None:
+            return Result("Give me a moment, I'm still starting up.", ok=False)
+        here = self._remote_said is None  # on the laptop (not a WhatsApp command)
+        sir = self.cfg["address_as"]
+        if tool == "board_hide":
+            b.hide()
+            return Result("Board closed.", icon="board")
+        if tool in ("board_show", "briefing"):
+            if not here:  # on the phone the board comes as text
+                return Result(f"{await b.brief_text()}\n\n{b.text_list()}", icon="board")
+            if tool == "briefing":
+                await b.morning(asked=True)
+                return None
+            await b.show("all")
+            return await b.walkthrough()  # explained out loud, ending with what Jarvis can do next
+        if tool == "todo_list":
+            if here:
+                await b.show("todos")
+            return b.list_result()
+        if tool == "plan_day":
+            if here:
+                await b.show("todos", focus=False)
+            more = "Anything to add to today's list?" if b.store.open_items() else \
+                "What would you like to get done today? Tell me everything and I'll sort it into a list."
+            return Result(more, icon="board", pending={"kind": "plan_today"})
+        if tool in ("plan_items", "todo_add"):
+            said = _raw_span(raw, a.get("text", "")) or a.get("text", "")
+            if tool == "todo_add" and len(board_words.split_plan(said)) <= 1:
+                it = b._add(said)
+                if here and not b.open:
+                    await b.show("todos", focus=False)
+                else:
+                    await b.push()
+                if it["owner"] == "jarvis":
+                    return Result(f"Added {it['text']}. That's one I can do myself. Shall I do it now?",
+                                  icon="board", pending={"kind": "board_start"})
+                return Result(f"Added {it['text']} to your list. {board_words.progress_line(b.store)}", icon="board")
+            r = await b.take_plan(said, "laptop" if here else "whatsapp")
+            return r or Result("I didn't catch the items. Say them one after another, like: call Ali, finish the "
+                               "report and email Sara.", ok=False, icon="board")
+        if tool == "todo_done":
+            return b.complete(a.get("text", ""), explicit=True)
+        if tool in ("todo_undo", "todo_remove"):
+            pool = [i for i in b.store.items if tool == "todo_remove" or i["status"] == "done"]
+            it, score, clear = board_words.best_match(a.get("text", ""), pool)
+            if it is None or score < 60:
+                return Result("I couldn't find that on today's list.", icon="board")
+            if tool == "todo_remove":
+                b.store.remove(it)
+                b.push_soon()
+                return Result(f"Removed {it['text']} from your list.", icon="board")
+            b.store.set(it, status="todo")
+            b.push_soon()
+            return Result(f"Okay, {it['text']} is back on the list.", icon="board")
+        if tool == "todo_clear_done":
+            done = [i for i in b.store.items if i["status"] == "done"]
+            for i in done:
+                b.store.remove(i)
+            b.push_soon()
+            return Result(f"Cleared {len(done)} finished item{'s' if len(done) != 1 else ''}." if done else
+                          "Nothing finished to clear yet.", icon="board")
+        if tool == "reminder":
+            return b.remind(a.get("text", ""))
+        if tool == "reminder_list":
+            return b.reminders_result()
+        if tool == "focus_start":
+            r = b.start_focus(board_words.focus_minutes(a.get("text", "")))
+            if here and not b.open:
+                await b.show("all", focus=False)
+            return r
+        if tool == "focus_stop":
+            return b.stop_focus()
+        return Result(f"I can't do that with the board yet, {sir}.", ok=False)
+
+    async def _board_pending(self, p: dict, t: str, raw: str) -> bool:
+        """Answers to the board's own questions: today's plan, "shall I start?", "do you mean ...?"."""
+        b, kind = self.board, p["kind"]
+        if kind == "plan_today":
+            if STOP.match(t) or board_words._NOTHING.match(t):
+                self.pending = None
+                await self.say(f"Alright, {self.cfg['address_as']}. Just tell me if anything comes up.", then_idle=True)
+                return True
+            other = parse(t, self.cfg["music"]["default_service"], self._resolve_open)
+            if other is not None and other.tool not in board_words.AUTO_TOOLS | board_words.GUIDED_TOOLS \
+                    | {"plan_items", "todo_add"}:
+                return False  # a different command; the question can still be answered later
+            if "?" in raw and _is_conversation(raw, t):
+                return False  # a question back ("what did I have yesterday?"): the conversation handles it
+            m = re.match(r"^(?:add|put)\s+(?P<x>.+?)(?:\s+(?:to|on) (?:my |the )?(?:list|to ?do list|board))?$", raw.strip(),
+                         re.I)
+            r = await b.take_plan(m.group("x") if m else raw, "laptop" if self._remote_said is None else "whatsapp")
+            if r is None:
+                return False
+            self.pending = None
+            await self._deliver([r])
+            return True
+        if kind == "board_walk":
+            return await self._board_walk(p, t, raw)
+        if kind == "todo_confirm":
+            it = b.store.get(p.get("id", ""))
+            self.pending = None
+            if YES.match(t) and it:
+                await self._deliver([b._tick(it)])
+                return True
+            if NO.match(t):
+                await self.say("Okay, I'll leave it.", then_idle=True)
+                return True
+            return False
+        # board_start ("Shall I start on those now?") / board_guided ("Next on my list: ... Shall I?")
+        if YES.match(t) or re.fullmatch(r"(?:start|go|begin|do it|go ahead|start it|yes start|start now)", t):
+            self.pending = None
+            if kind == "board_guided":
+                if not await b.start_guided(p.get("id", "")):
+                    await self.say("That one's gone from the list.", then_idle=True)
+                return True
+            await self.board_run()
+            return True
+        if NO.match(t) or re.match(r"^(?:not now|later|not yet|wait|hold on)\b", t):
+            self.pending = None
+            await self.say("Okay. They're on the board. Say start your tasks whenever you're ready.", then_idle=True)
+            return True
+        self.pending = None
+        return False
+
+    async def _board_walk(self, p: dict, t: str, raw: str) -> bool:
+        """The board walkthrough's questions: "Shall I help you reply to them?", then "Shall I give Claude Code
+        the next prompt in Jarvis?". A yes hands over to the usual reply / Claude Code flows (which still read
+        everything back before anything is sent); a no moves on to the next offer."""
+        b = self.board
+        yes = YES.match(t) or re.match(r"^(?:yes|yeah|yep|sure|ok|okay|please)\b", t)
+        if p["stage"] == "emails":
+            msgs = p.get("messages") or []
+            named = next((i for i, m in enumerate(msgs) if any(
+                w in t.split() for w in re.findall(r"[a-z]{3,}", m["from_name"].lower()))), None)
+            if named is not None or (yes and msgs):
+                # straight into the reply flow: the one you named, the only one, or "which one first?"
+                self.pending = {"kind": "reply_list", "messages": msgs}
+                if named is not None or len(msgs) == 1:
+                    await self._choose((named or 0) + 1)
+                    return True
+                lines = [f"{i}, {m['from_name']} about {m['subject']}" for i, m in enumerate(msgs[:4], 1)]
+                await self.say("Which one first? " + ". ".join(lines) + ".", then_idle=False, follow=True)
+                return True
+            if NO.match(t) or re.match(r"^(?:not now|later|skip|next|no )\b", t):
+                nxt = b.walk_on()
+                await self.say(f"Okay. {nxt}" if nxt else "Okay.", then_idle=not nxt, follow=bool(nxt))
+                return True
+            self.pending = None
+            return False
+        # stage "project": the next prompt for Claude Code in that project
+        offer = {"kind": "claude_task_offer", "cwd": p["cwd"], "name": p["name"], "session": p.get("session", "")}
+        if not offer["session"]:
+            from .tools.claude_code import find_project
+
+            hit = await asyncio.to_thread(find_project, p["cwd"])
+            offer["session"] = hit.session.stem if hit else ""
+        if yes or _TASK_START.match(t) or re.search(r"\b(?:ask|tell|have|get) (?:it|claude)\b", t):
+            self.pending = offer  # the usual Claude Code offer takes it from here ("What should Claude Code do?")
+            return await self._handle_pending(t, raw)
+        if NO.match(t) or re.match(r"^(?:not now|later|skip|no )\b", t):
+            self.pending = None
+            await self.say("Okay. I'm here when you need me.", then_idle=True)
+            return True
+        self.pending = None
+        return False
+
+    async def board_run(self) -> None:
+        """Start Jarvis's side of today's list (see Board.run_jarvis)."""
+        if self.board is None:
+            return
+        r, guided = await self.board.run_jarvis()
+        if guided:
+            await self.say(r.say, then_idle=False)
+            await self.board.start_guided(guided)
+            return
+        await self._deliver([r])
+
+    async def board_say(self, r: Result, follow: bool = False) -> None:
+        """Something the board needs said, as if you'd asked: out loud on the laptop."""
+        if self._remote_said is None:
+            self.speak_aloud = True
+        await self._deliver([r])
+
+    async def board_announce(self, line: str, urgent: bool = False) -> None:
+        """Jarvis speaking up by itself (a reminder, a finished task). Never over a phone command, and
+        held back during a focus session unless it's urgent (a reminder you set)."""
+        if self._remote_said is not None:
+            return
+        if self.board is not None and self.board.focusing and not urgent:
+            self.ui.send({"type": "notify", "kind": "board", "from": "Jarvis", "subject": line})
+            return
+        if self.in_call or self.state != "idle" or (self.task is not None and not self.task.done()):
+            self._queue_speech(line)
+            return
+        self.speak_aloud = True
+        self.player.play(earcons.NOTIFY)
+        await self.say(line, then_idle=True)
+
+    def settle(self) -> None:
+        """A background board task finished: the orb shouldn't stay on "working" if nothing else is."""
+        if not self.in_call and self.state == "acting" and (self.task is None or self.task.done()):
+            self._set_state("idle")
+
+    async def _board_next(self, kind: str, target: str = "") -> str:
+        return await self.board.finished(kind, target) if self.board is not None else ""
+
     async def _whatsapp_send(self, p: dict) -> None:
         """The ONLY path that sends a WhatsApp message: after you confirmed the exact text read back."""
         from .tools.whatsapp import WhatsAppError, send_ready_message
@@ -1552,7 +1807,8 @@ class Jarvis:
             return
         self.ui.send({"type": "card", "kind": "sent", "to": p["chat"], "subject": "WhatsApp message"})
         self.player.play(earcons.DONE)
-        await self.say(f"Sent to {p['chat']} on WhatsApp.", then_idle=True)
+        nxt = await self._board_next("whatsapp", p["chat"])
+        await self.say(f"Sent to {p['chat']} on WhatsApp. {nxt}".strip(), then_idle=not nxt, follow=bool(nxt))
 
     async def _launch_claude(self, p: dict, task: str | None = None) -> None:
         """Hand the confirmed task to Claude Code: in the background (it reports back when done), or in a
@@ -1586,8 +1842,10 @@ class Jarvis:
             await self._deliver([Result(f"Claude Code didn't start: {str(e)[:80]}.", ok=False, icon="code")])
             return
         where = "on WhatsApp" if self._remote_said is not None else "here"
+        nxt = await self._board_next("claude", p["name"])
         await self._deliver([Result(f"Sent. Claude Code is working on it in {spoken} in the background. I'll tell "
-                                    f"you {where} when it's done. Say stop Claude Code to cancel it.", icon="code")])
+                                    f"you {where} when it's done. Say stop Claude Code to cancel it. {nxt}".strip(),
+                                    icon="code", pending=self.pending if nxt else None)])
 
     async def _claude_done(self, t) -> None:
         """A background task ended: tell you, on WhatsApp if you sent it from your phone (or the laptop is
@@ -1635,7 +1893,9 @@ class Jarvis:
             return
         self.ui.send({"type": "card", "kind": "sent", "to": to, "subject": subject})
         self.player.play(earcons.DONE)
-        await self.say(f"Sent to {p.get('to_name', to).split()[0]}.", then_idle=True)
+        name = p.get("to_name", to).split()[0]
+        nxt = await self._board_next("email", name)
+        await self.say(f"Sent to {name}. {nxt}".strip(), then_idle=not nxt, follow=bool(nxt))
 
     async def _revise_email(self, p: dict, instruction: str) -> None:
         """Apply one change to the draft, show it, and read the new text back before asking to send."""
@@ -2088,6 +2348,14 @@ class Jarvis:
 
     # ------------------------------------------------------------------ email announcements
     async def _announce_mail(self, msgs: list[dict]) -> None:
+        if self.board is not None:
+            self.board._cache.pop("emails", None)  # the board's inbox shows it straight away
+            self.board._cache.pop("needs_reply", None)
+            self.board.push_soon()
+            if self.board.focusing:  # held until the focus session ends; the board still lists it
+                for m in msgs[:3]:
+                    self.ui.send({"type": "notify", "kind": "email", "from": m["from_name"], "subject": m["subject"]})
+                return
         if self.state not in ("idle",) or self.muted:
             self.notices += msgs
             return
@@ -2161,6 +2429,12 @@ class Jarvis:
         elif kind == "choose" and self.pending:
             self._interrupt()
             self.task = asyncio.create_task(self._choose(int(msg.get("index", 0)) + 1))
+        elif kind == "board_action" and self.board is not None:
+            if msg.get("action") in ("run", "email", "project", "focus", "focus_stop", "open"):
+                self._interrupt()  # a click that makes Jarvis talk replaces whatever it was saying
+                self.task = asyncio.create_task(self.board.on_action(msg))
+            else:
+                asyncio.create_task(self.board.on_action(msg))
         elif kind == "dismiss":
             self.pending = None
         elif kind == "snapshot":  # debug: ask the overlay to save a PNG of itself to data/snapshot.png

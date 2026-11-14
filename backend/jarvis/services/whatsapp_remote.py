@@ -115,6 +115,8 @@ def card_text(card: dict[str, Any]) -> str:
         return "\n\n".join(parts)
     if kind == "prompt_draft":
         return f"*Claude Code task ({card.get('project', '')})*\n{card.get('text') or card.get('task', '')}"
+    if kind == "board_list":
+        return card.get("text", "")
     return ""
 
 

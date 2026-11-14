@@ -123,7 +123,11 @@ function createWindow() {
   win.webContents.on('console-message', (_e, level, message, line, source) => {
     if (level >= 2) log('page:', message, `(${path.basename(source || '')}:${line})`);   // warnings and errors
   });
-  win.webContents.on('render-process-gone', (_e, d) => log('page crashed:', d.reason));
+  // if the page ever dies (14 Nov 23:30 it did, mid-call), bring the orb straight back instead of leaving a hole
+  win.webContents.on('render-process-gone', (_e, d) => {
+    log('page crashed:', d.reason, '- reloading');
+    if (d.reason !== 'clean-exit') setTimeout(() => { if (win && !win.isDestroyed()) win.webContents.reload(); }, 800);
+  });
   win.loadFile(path.join(__dirname, 'index.html'));
   win.once('ready-to-show', () => win.showInactive());
   screen.on('display-metrics-changed', place);
@@ -144,6 +148,7 @@ function buildTray() {
     { label: `Talk or type   (${HOTKEY.replace('Control', 'Ctrl')})`, click: () => win.webContents.send('hotkey') },
     { label: 'Mute microphone', type: 'checkbox', checked: muted, click: (i) => setMute(i.checked) },
     { label: 'Put the orb back in the corner', click: resetSpot },
+    { label: 'Open board view', click: () => win.webContents.send('board-request') },
     { type: 'separator' },
     { label: 'Settings (config.yaml)', click: () => shell.openPath(path.join(ROOT, 'config.yaml')) },
     { label: 'Contacts (contacts.yaml)', click: () => shell.openPath(path.join(ROOT, 'contacts.yaml')) },
@@ -205,9 +210,78 @@ ipcMain.on('open', (_e, what) => {
   if (what === 'config') shell.openPath(path.join(ROOT, 'config.yaml'));
 });
 
+// ---------------------------------------------------------------- the board (command center)
+// A second window over the whole work area of the screen you're on. Opaque on purpose: a see-through
+// full-screen window has to be re-blended with the desktop on every frame, which lagged; an opaque one is cheap
+// and keeps the colours crisp. It is created hidden at start-up, so "show my board" opens it instantly.
+// The orb stays above it (its level is higher), so you can still click and drag the orb.
+let board = null;
+const boardArea = () => screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+
+function createBoard() {
+  board = new BrowserWindow({
+    ...boardArea(), show: false, frame: false, resizable: false, movable: false, minimizable: false,
+    maximizable: false, fullscreenable: false, skipTaskbar: true, hasShadow: false, alwaysOnTop: true,
+    title: 'JARVIS Board', backgroundColor: '#01040a',
+    webPreferences: {
+      preload: path.join(__dirname, 'board-preload.js'), contextIsolation: true, nodeIntegration: false,
+      additionalArguments: [`--jarvis-port=${PORT}`, `--jarvis-token=${TOKEN}`],
+    },
+  });
+  board.setAlwaysOnTop(true, 'floating');
+  board.webContents.on('console-message', (_e, level, message, line, source) => {
+    if (level >= 2) log('board:', message, `(${path.basename(source || '')}:${line})`);
+  });
+  board.webContents.on('render-process-gone', (_e, d) => {
+    log('board crashed:', d.reason, '- reloading');
+    if (d.reason !== 'clean-exit') setTimeout(() => { if (board && !board.isDestroyed()) board.webContents.reload(); }, 800);
+  });
+  board.on('closed', () => { board = null; });
+  board.loadFile(path.join(__dirname, 'board.html'));
+}
+
+function showBoard(m) {
+  if (!board) createBoard();
+  const reveal = () => {
+    if (!board) return;
+    board.setBounds(boardArea());
+    if (m.focus) { board.show(); board.focus(); } else board.showInactive();
+    board.webContents.send('board-view', m.view || 'all');
+    win && win.setAlwaysOnTop(true, 'screen-saver');   // the orb stays on top of the board
+  };
+  if (board.webContents.isLoading()) board.webContents.once('did-finish-load', () => setTimeout(reveal, 60));
+  else reveal();
+}
+
+ipcMain.on('board', (_e, m) => {
+  if (!m) return;
+  if (m.action === 'show') showBoard(m);
+  else if (m.action === 'hide' && board && board.isVisible()) board.webContents.send('board-leave');
+});
+ipcMain.on('board-hide', () => { if (board) board.hide(); });
+
+// right-click on the orb
+ipcMain.on('orb-menu', () => {
+  if (!win) return;
+  Menu.buildFromTemplate([
+    { label: 'Open board view', click: () => win.webContents.send('board-request') },
+    { label: `Talk to Jarvis   (${HOTKEY.replace('Control', 'Ctrl')})`, click: () => win.webContents.send('hotkey') },
+    { type: 'separator' },
+    { label: muted ? 'Unmute microphone' : 'Mute microphone', click: () => setMute(!muted) },
+    { label: 'Put the orb back in the corner', click: resetSpot },
+    { label: 'Open log', click: () => shell.openPath(path.join(ROOT, 'data', 'logs', 'jarvis.log')) },
+    { type: 'separator' },
+    { label: 'Quit JARVIS', click: () => { win.webContents.send('quit'); setTimeout(() => app.quit(), 400); } },
+  ]).popup({ window: win });
+});
+ipcMain.on('board-open-url', (_e, url) => {
+  if (/^https:\/\/mail\.google\.com\//.test(url)) shell.openExternal(url);   // only links the board makes
+});
+
 app.whenReady().then(() => {
   createWindow();
   buildTray();
+  setTimeout(() => { if (!board) createBoard(); }, 4000);   // warm the board up, out of sight
   const ok = globalShortcut.register(HOTKEY, () => {
     win.showInactive();
     win.webContents.send('hotkey');

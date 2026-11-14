@@ -13,19 +13,22 @@ if (!window.host) body.style.background = 'radial-gradient(circle at 30% 20%, #2
 const orb = new Orb($('orb'));
 new ResizeObserver(() => orb.resize()).observe($('orb'));
 
+// [deep, bright, swirl, brightness]: saturated, high-contrast colours (the orb tone-maps them, so they glow
+// without washing out). Cyan = listening, violet = thinking, gold = speaking, teal = working.
 const PALETTE = {
-  booting:   ['#1e293b', '#475569', 0.3, 0.6],
-  idle:      ['#0C4A6E', '#38BDF8', 0.05, 1.0],
-  listening: ['#06B6D4', '#3B82F6', 0.0, 1.0],
-  thinking:  ['#7C3AED', '#D946EF', 1.0, 1.0],
-  acting:    ['#0D9488', '#2DD4BF', 0.6, 1.0],
-  speaking:  ['#F59E0B', '#F97316', 0.2, 1.0],
-  waiting:   ['#0891B2', '#6366F1', 0.1, 0.9],
-  error:     ['#B91C1C', '#EF4444', 0.0, 1.0],
-  notify:    ['#E11D48', '#FB7185', 0.2, 1.0],
-  muted:     ['#1e293b', '#64748B', 0.0, 0.55],
-  offline:   ['#450a0a', '#7f1d1d', 0.0, 0.5],
+  booting:   ['#16213A', '#4B6A9B', 0.3, 0.6],
+  idle:      ['#003A8C', '#00B7FF', 0.05, 0.95],
+  listening: ['#0047FF', '#00F0FF', 0.0, 1.0],
+  thinking:  ['#5B0EFF', '#FF2BD6', 1.0, 1.0],
+  acting:    ['#006B5E', '#00FFC6', 0.6, 1.0],
+  speaking:  ['#FF3D00', '#FFC400', 0.2, 1.0],
+  waiting:   ['#1A3DFF', '#8C7BFF', 0.1, 0.9],
+  error:     ['#9B0000', '#FF1744', 0.0, 1.0],
+  notify:    ['#C2004B', '#FF4FA0', 0.2, 1.0],
+  muted:     ['#1B2433', '#5C6B80', 0.0, 0.55],
+  offline:   ['#450a0a', '#9B1C1C', 0.0, 0.5],
 };
+let accentColor = PALETTE.idle[1];   // read by the spectrum ring every frame (no style lookups per frame)
 const LABEL = { listening: 'Listening', thinking: 'Thinking', acting: 'Working on it', speaking: 'Speaking',
   waiting: 'Your turn', error: 'Something went wrong', idle: 'Ready', muted: 'Microphone off', offline: 'Reconnecting',
   booting: 'Starting up' };
@@ -63,7 +66,7 @@ function setMode(next) {
     mode = next;
     interactive = null;
     placeAround();
-    orb.fps = next === 'dock' && state === 'idle' ? 20 : next === 'mini' ? 30 : 60;
+    orb.fps = orbFps();
     if (next === 'full') setTimeout(() => $('input').focus(), 80);
     setTimeout(() => { orb.resize(); body.classList.remove('switching'); }, 70);
   }, 140);
@@ -93,6 +96,8 @@ function setState(value, extra = {}) {
   const key = muted ? 'muted' : (extra.notify ? 'notify' : value);
   const [a, b, swirl, dim] = PALETTE[key] || PALETTE.idle;
   orb.setPalette(a, b, swirl, dim);
+  orb.setMode(muted ? 'muted' : value);
+  accentColor = b;
   document.documentElement.style.setProperty('--accent', b);
   body.className = body.className.replace(/\bstate-\S+/g, '').trim() + ` state-${value}`;
   if (value === 'error') orb.doShake();
@@ -102,8 +107,10 @@ function setState(value, extra = {}) {
   $('pill-status').textContent = label;
   $('tag-state').textContent = key === 'idle' ? 'Online' : key === 'muted' ? 'Mic off' : label;
   $('t-status').textContent = value === 'offline' ? 'OFFLINE' : 'ONLINE';
-  orb.fps = mode === 'dock' && value === 'idle' ? 20 : 60;
+  orb.fps = orbFps();
 }
+// a resting orb in the corner only needs to breathe: fewer frames keep the laptop quick
+const orbFps = () => (mode === 'dock' ? (state === 'idle' || muted ? 12 : 40) : mode === 'mini' ? 30 : 60);
 
 // ---------------------------------------------------------------- conversation log
 const hhmmss = () => new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -151,31 +158,37 @@ setInterval(() => {
 }, 16);
 
 // ---------------------------------------------------------------- spectrum ring (full screen only)
+// Drawn as two batched paths (a wide faint one for the glow, a thin bright one on top) at 30 fps: the old
+// version blurred every bar (canvas shadowBlur) and re-read the page's styles each frame, which lagged calls.
 const spec = $('spectrum'), sctx = spec.getContext('2d');
 const BARS = 120;
-function drawSpectrum() {
+let specLast = 0;
+function drawSpectrum(now) {
   requestAnimationFrame(drawSpectrum);
-  if (mode !== 'full') return;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = spec.clientWidth * dpr, h = spec.clientHeight * dpr;
+  if (mode !== 'full' || now - specLast < 32) return;
+  specLast = now;
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  const w = Math.round(spec.clientWidth * dpr), h = Math.round(spec.clientHeight * dpr);
   if (spec.width !== w || spec.height !== h) { spec.width = w; spec.height = h; }
   sctx.clearRect(0, 0, w, h);
   const cx = w / 2, cy = h / 2, r0 = (w / 1.55) * 0.5 * 1.04, maxLen = w * 0.085;
-  const color = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#38BDF8';
-  sctx.strokeStyle = color; sctx.shadowColor = color; sctx.shadowBlur = 8 * dpr; sctx.lineCap = 'round';
-  const t = performance.now() / 1000, lvl = orb.level || 0, bands = orb.bands || [];
+  const t = now / 1000, lvl = orb.level || 0, bands = orb.bands || [];
+  const glow = new Path2D(), core = new Path2D();
   for (let i = 0; i < BARS; i++) {
     const k = i % 60, b = bands[Math.floor((k < 30 ? k : 59 - k) * 32 / 30)] || 0;   // mirrored left/right
     const idle = 0.05 + 0.04 * Math.sin(t * 2 + i * 0.35);
     const len = maxLen * Math.max(idle, b * (0.35 + lvl * 1.4));
-    const a = (i / BARS) * Math.PI * 2 - Math.PI / 2;
-    sctx.globalAlpha = 0.35 + Math.min(0.6, b * lvl * 2);
-    sctx.lineWidth = Math.max(1.2, w / 260);
-    sctx.beginPath();
-    sctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
-    sctx.lineTo(cx + Math.cos(a) * (r0 + len), cy + Math.sin(a) * (r0 + len));
-    sctx.stroke();
+    const a = (i / BARS) * Math.PI * 2 - Math.PI / 2, ca = Math.cos(a), sa = Math.sin(a);
+    for (const p of [glow, core]) { p.moveTo(cx + ca * r0, cy + sa * r0); p.lineTo(cx + ca * (r0 + len), cy + sa * (r0 + len)); }
   }
+  sctx.lineCap = 'round';
+  sctx.strokeStyle = accentColor;
+  sctx.globalAlpha = 0.16 + Math.min(0.25, lvl * 0.5);
+  sctx.lineWidth = Math.max(4, w / 90);
+  sctx.stroke(glow);
+  sctx.globalAlpha = 0.7 + Math.min(0.3, lvl);
+  sctx.lineWidth = Math.max(1.4, w / 300);
+  sctx.stroke(core);
   sctx.globalAlpha = 1;
 }
 requestAnimationFrame(drawSpectrum);
@@ -333,8 +346,9 @@ function showCard(c) {
 
 function toast(n) {
   const into = mode === 'full' ? $('cards') : $('toasts');
-  addCard(el('div', {}, el('h4', {}, 'New email'), el('div', { style: 'font-weight:600' }, n.from),
-    el('div', { class: 'sub' }, n.subject)), { into, replace: false, ttl: 15000 });
+  const head = { email: 'New email', reminder: '⏰ Reminder', board: 'Jarvis' }[n.kind] || 'Jarvis';
+  addCard(el('div', {}, el('h4', {}, head), el('div', { style: 'font-weight:600' }, n.from),
+    el('div', { class: 'sub' }, n.subject)), { into, replace: false, ttl: n.kind === 'reminder' ? 60000 : 15000 });
 }
 
 // ---------------------------------------------------------------- backend events
@@ -366,6 +380,9 @@ function handle(m) {
     case 'reply': onReply(m.text, m.append); break;
     case 'card': showCard(m); break;
     case 'notify': toast(m); break;
+    case 'board':  // the command center lives in its own window; the main process shows and hides it
+      if (m.action === 'show' || m.action === 'hide') host.board && host.board({ action: m.action, view: m.view, focus: m.focus, glass: m.glass });
+      break;
     case 'snapshot': host.snapshot && host.snapshot(); break;
     case 'focus_input':  // Jarvis is asking for something easier to type (an email address)
       if (inCall && mode !== 'full') setMode('full');
@@ -490,7 +507,11 @@ $('orb-wrap').addEventListener('click', () => {
   if (mode === 'mini') { setMode('full'); return; }
   send({ type: state === 'speaking' || state === 'thinking' ? 'stop' : 'wake' });  // cut in / listen now
 });
-$('orb-wrap').addEventListener('contextmenu', (e) => { e.preventDefault(); setMuted(!muted); });
+// right-click: Jarvis's menu (board view, talk, mute...); the main process draws it
+$('orb-wrap').addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (host.menu) host.menu({ muted }); else setMuted(!muted);
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && inCall) { e.preventDefault(); endIt(); }
@@ -502,6 +523,7 @@ host.on('hotkey', () => {
 });
 host.on('mute', (v) => setMuted(v));
 host.on('quit', () => send({ type: 'quit' }));
+host.on('board-request', () => send({ type: 'board_action', action: 'open' }));  // tray: "Show my board"
 
 // click-through in the corner modes, except over the orb / pill / toasts
 let interactive = null;
