@@ -1,4 +1,4 @@
-﻿"""The board: today's plan, your inbox and your Claude Code projects on one frosted-glass screen.
+"""The board: today's plan, your inbox and your Claude Code projects on one frosted-glass screen.
 
 Every morning (or whenever you ask) Jarvis opens the board, briefs you and asks what's on today. Your answer,
 spoken, typed or sent on WhatsApp, becomes today's list. The items Jarvis can do itself (research, emails,
@@ -68,38 +68,69 @@ class Store:
     def key(self) -> str:
         return self._today().isoformat()
 
+    def _blank(self) -> dict:
+        return {"items": [], "briefed": False, "wrapped": False, "source": "", "log": [], "opened": False}
+
     def day(self) -> dict:
-        """Today's record; on the first look each day, yesterday's unfinished items move over."""
+        """Today's record; on the first look each day, the last day's unfinished items move over (items
+        planned ahead for today, "tomorrow ..." said yesterday, are already in it)."""
         days = self.data["days"]
-        if self.key not in days:
-            carried = []
+        rec = days.get(self.key)
+        if rec is None or not rec.get("opened", True):
+            rec = rec or self._blank()
             earlier = sorted(k for k in days if k < self.key)
             if earlier:
+                have = {_key(i["text"]) for i in rec["items"]}
                 for it in days[earlier[-1]].get("items", []):
-                    if it["status"] != "done":
-                        carried.append({**it, "carried": True, "status": "todo" if it["status"] != "failed" else
-                                        "failed", "id": _new_id()})
-            days[self.key] = {"items": carried, "briefed": False, "wrapped": False, "source": "", "log": []}
+                    if it["status"] != "done" and _key(it["text"]) not in have:
+                        rec["items"].append({**it, "carried": True, "id": _new_id(),
+                                             "status": "todo" if it["status"] != "failed" else "failed"})
+            rec["opened"] = True
+            days[self.key] = rec
             self.save()
-        return days[self.key]
+        return rec
+
+    def day_for(self, date: dt.date) -> dict:
+        """Another day's record (a plan for tomorrow, Monday...)."""
+        if date <= self._today():
+            return self.day()
+        return self.data["days"].setdefault(date.isoformat(), self._blank())
 
     @property
     def items(self) -> list[dict]:
         return self.day()["items"]
 
-    def add(self, text: str, owner: str = "you", kind: str = "", tool: str = "", args: dict | None = None) -> dict:
+    def add(self, text: str, owner: str = "you", kind: str = "", tool: str = "", args: dict | None = None,
+            on: dt.date | None = None) -> dict:
         text = tidy(text)
-        same = next((i for i in self.items if i["status"] != "done" and _key(i["text"]) == _key(text)), None)
+        items = self.day_for(on)["items"] if on else self.items
+        same = next((i for i in items if i["status"] != "done" and _key(i["text"]) == _key(text)), None)
         if same:  # said twice: one item
             return same
         it = {"id": _new_id(), "text": text, "owner": owner, "kind": kind, "tool": tool, "args": args or {},
               "status": "todo", "result": "", "created": time.time(), "done_at": 0, "carried": False}
-        self.items.append(it)
+        items.append(it)
         self.save()
         return it
 
+    def ahead(self, days: int = 7) -> list[tuple[dt.date, list[dict]]]:
+        """Items planned for the coming days (not today), soonest first."""
+        today = self._today()
+        out = []
+        for k in sorted(self.data["days"]):
+            d = dt.date.fromisoformat(k)
+            if today < d <= today + dt.timedelta(days=days):
+                items = [i for i in self.data["days"][k]["items"] if i["status"] != "done"]
+                if items:
+                    out.append((d, items))
+        return out
+
     def get(self, item_id: str) -> dict | None:
-        return next((i for i in self.items if i["id"] == item_id), None)
+        hit = next((i for i in self.items if i["id"] == item_id), None)
+        if hit is None:  # an item planned for a later day
+            hit = next((i for k, rec in self.data["days"].items() if k > self.key for i in rec["items"]
+                        if i["id"] == item_id), None)
+        return hit
 
     def set(self, item: dict, **changes) -> None:
         item.update(changes)
@@ -110,7 +141,10 @@ class Store:
         self.save()
 
     def remove(self, item: dict) -> None:
-        self.day()["items"] = [i for i in self.items if i["id"] != item["id"]]
+        self.day()
+        for k, rec in self.data["days"].items():
+            if k >= self.key:
+                rec["items"] = [i for i in rec["items"] if i["id"] != item["id"]]
         self.save()
 
     def open_items(self, owner: str | None = None) -> list[dict]:
@@ -352,6 +386,39 @@ def spoken_time(when: dt.datetime, now: dt.datetime) -> str:
     if when.date() == now.date() + dt.timedelta(days=1):
         return f"tomorrow at {clock}"
     return when.strftime("%A at ") + clock
+
+
+_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+_DAY_PHRASE = re.compile(
+    r"\s*\b(?:(?:for|on|by|in|this|next|coming)\s+)*(?:the\s+)?(?P<d>day after tomorrow|tomorrow(?:'s)?|"
+    + "|".join(_WEEKDAYS) + r")\b(?:'s)?(?:\s+(?:list|plan|mission|board|to ?do list))?", re.I)
+
+
+def when_day(text: str, today: dt.date) -> tuple[dt.date | None, str]:
+    """(the day an item is for, the item without those words). "Deploy Polani mono tomorrow" ->
+    (tomorrow, "Deploy Polani mono"); "Meeting with CCL's CTO on Monday 3pm" -> (Monday, "Meeting with CCL's CTO
+    3pm"). (None, text) for today."""
+    m = _DAY_PHRASE.search(text)
+    if not m:
+        return None, text
+    d = m.group("d").lower().replace("'s", "")
+    if d == "day after tomorrow":
+        day = today + dt.timedelta(days=2)
+    elif d == "tomorrow":
+        day = today + dt.timedelta(days=1)
+    else:
+        ahead = (_WEEKDAYS.index(d) - today.weekday()) % 7
+        day = today + dt.timedelta(days=ahead or 7)   # "Monday" said on a Monday means next week's
+    rest = re.sub(r"\s+", " ", (text[:m.start()] + " " + text[m.end():])).strip(" ,.-")
+    return day, rest or text
+
+
+def day_name(day: dt.date, today: dt.date) -> str:
+    if day == today:
+        return "today"
+    if day == today + dt.timedelta(days=1):
+        return "tomorrow"
+    return day.strftime("%A") if (day - today).days < 7 else day.strftime("%A %d %B")
 
 
 def focus_minutes(t: str) -> int:

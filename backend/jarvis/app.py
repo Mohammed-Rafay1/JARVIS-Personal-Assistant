@@ -88,6 +88,18 @@ _REPEAT = re.compile(
     r"i (?:didn'?t|did not|couldn'?t|could not) (?:hear|catch|get|understand) (?:you|that|it|what you said))$")
 
 
+# a question that the user's planner can answer ("when is my meeting with CCL's CTO?", "what's my plan?")
+_PLANNER_WORDS = re.compile(r"\b(?:tasks?|to ?dos?|todo|list|plans?|planner|planned|meetings?|schedule|agenda|"
+                            r"tomorrow|today|tonight|remind(?:er|ers)?|deadline|board|mission|week|weekend|monday|"
+                            r"tuesday|wednesday|thursday|friday|saturday|sunday|appointment|call with|busy|free)\b")
+# short praise or thanks: answered at once, never "I didn't catch that"
+_THANKS = re.compile(r"(?:(?:that's|thats|that is|it's|its|so|very|really|just)\s+)?(?:awesome|amazing|great|nice|cool|"
+                     r"perfect|brilliant|excellent|wow|love it|good job|well done|thanks|thank you|thank you so much|"
+                     r"thanks a lot|cheers)(?:\s+(?:jarvis|sir|man|buddy|mate))?")
+# "The task ... has been added to your planner": the language model claiming a change it can't make
+_FALSE_ADD = re.compile(r"\b(?:(?:has|have) been|i(?:'ve| have| just)?|i'll|i will)\s+(?:added|scheduled|saved|noted|"
+                        r"put|placed|add|schedule|note)\b.*\b(?:your |the |my )?(?:to ?do(?: list)?|list|planner|board|"
+                        r"mission|reminders?|calendar)\b", re.I)
 # filler the small model tacks on after an answer ("How can I assist you today?"): never worth saying
 _OFFER = re.compile(r"^(?:how (?:else )?(?:can|may) i (?:assist|help)|is there anything (?:else|specific|more)|"
                     r"(?:just )?let me know if|feel free to|if you (?:need|have) (?:any|more|anything)|"
@@ -179,6 +191,7 @@ class Jarvis:
         self._last_question = ""      # the last question the language model answered ("search it" looks it up)
         self.remote = None            # the WhatsApp link, once started (reports finished Claude Code tasks)
         self.board = None             # today's plan, inbox and projects on one screen (services/briefing.py)
+        self.last_heard = 0.0         # when you last said or typed something (Jarvis doesn't speak up over you)
         # up to five exchanges (trimmed in _chat): enough to hold a conversation, quick on this CPU
         self.history: deque[dict] = deque()
         self._last_chat = 0.0
@@ -838,6 +851,7 @@ class Jarvis:
             self.ui.send({"type": "transcript", "text": text, "final": True})
         t = normalize(text)
         conf, self._heard_conf = self._heard_conf, 0.0
+        self.last_heard = time.monotonic()
         log.info("user: %r -> %r", text, t)
         if self._said:  # the reply to the previous thing you said
             self._last_reply, self._said = " ".join(self._said), []
@@ -891,6 +905,11 @@ class Jarvis:
             await self._office_edit(text)
             return
         if intents == [None]:
+            if _THANKS.fullmatch(t):  # "Awesome." heard a little unsure is still just a nice word back
+                await self.say(f"Glad you like it, {self.cfg['address_as']}." if re.match(r"(?:awesome|amazing|great|"
+                               r"nice|cool|perfect|brilliant|excellent|wow|love it)", t) else
+                               f"My pleasure, {self.cfg['address_as']}.", then_idle=True)
+                return
             if not typed and len(t.split()) <= 3 and conf < -0.7:
                 # a mumbled fragment ("Yeah, this.") once kept the model busy for a minute; ask instead
                 log.info("unsure fragment not sent to the model: %r (%.2f)", text, conf)
@@ -1609,14 +1628,23 @@ class Jarvis:
             more = "Anything to add to today's list?" if b.store.open_items() else \
                 "What would you like to get done today? Tell me everything and I'll sort it into a list."
             return Result(more, icon="board", pending={"kind": "plan_today"})
+        if tool == "todo_ahead":
+            day = a.get("day", "")
+            on = board_words.when_day(day, dt.date.today())[0] if day and "week" not in day else None
+            return b.ahead_result(on)
         if tool in ("plan_items", "todo_add"):
             said = _raw_span(raw, a.get("text", "")) or a.get("text", "")
+            if tool == "todo_add" and re.fullmatch(r"(?:it|this|that|these|those|them|the task|this task|that task)",
+                                                   said.strip().lower()):
+                return Result("What should I put on the list?", icon="board", pending={"kind": "plan_today"})
             if tool == "todo_add" and len(board_words.split_plan(said)) <= 1:
                 it = b._add(said)
                 if here and not b.open:
                     await b.show("todos", focus=False)
                 else:
                     await b.push()
+                if it["day"]:  # planned ahead: "for tomorrow", "for Monday"
+                    return Result(f"Added {it['text']} to the list{b.day_words(it['day'])}.", icon="board")
                 if it["owner"] == "jarvis":
                     return Result(f"Added {it['text']}. That's one I can do myself. Shall I do it now?",
                                   icon="board", pending={"kind": "board_start"})
@@ -2187,9 +2215,16 @@ class Jarvis:
             lambda: not spoken and self._queue_speech(f"Just a moment, {self.cfg['address_as']}.", filler=True))
         max_tokens = int(c.get("max_reply_tokens", 320))  # room for a proper answer or a bit of advice
         max_sentences = int(c.get("max_spoken_sentences", 5))
+        # a question about tasks, plans or meetings gets the real planner, so the model answers from it
+        # (14 Nov: without it, it invented "your task today is to deploy Polani mono" and said it had added it)
+        planner = ""
+        if self.board is not None and _PLANNER_WORDS.search(text.lower()):
+            planner = ("Facts from the user's planner board. Answer only from these; never invent tasks:\n"
+                       + self.board.context_text())
         try:
             for attempt in range(2):
-                async for kind, data in _deadline(self.llm.chat(list(self.history), tools, max_tokens=max_tokens),
+                async for kind, data in _deadline(self.llm.chat(list(self.history), tools, max_tokens=max_tokens,
+                                                                **({"context": planner} if planner else {})),
                                                   first_wait,
                                                   float(c.get("gap_seconds", 15))):
                     filler and filler.cancel()
@@ -2203,6 +2238,12 @@ class Jarvis:
                         if not m:
                             break
                         sentence, buf = _tidy_spoken(m.group(1)), buf[m.end():]
+                        if _FALSE_ADD.search(sentence):  # the model can't change the list: never claim it did
+                            log.info("replaced a made-up claim: %r", sentence)
+                            sentence = ("I can't change the list from a chat, but you can: say add, then the "
+                                        "task, to my list.")
+                            if sentence in spoken:
+                                continue
                         if sentence and not (spoken and _OFFER.match(sentence)):
                             spoken.append(sentence)
                             self._queue_speech(sentence)

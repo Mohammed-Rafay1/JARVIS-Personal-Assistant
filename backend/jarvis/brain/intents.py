@@ -1,4 +1,4 @@
-﻿"""Deterministic intent engine: the primary path for commands.
+"""Deterministic intent engine: the primary path for commands.
 
 Fast (<1 ms), works without the LLM, and predictable. Anything it can't parse goes to the LLM.
 """
@@ -715,13 +715,38 @@ _WEB_TOOLS = {"open_website", "web_search", "play_youtube", "web_research"}
 _BOARD_WORD = r"(?:board|dashboard|status board|daily board|hud|overview|status screen|command (?:center|centre))"
 _LIST_WORD = r"(?:to ?do(?:s| list)?|to-do(?:s| list)?|tasks?|task list|list|checklist|board)"
 _TODAY = r"(?: for today| today| for the day)?"
-BOARD_TOOLS = {"board_show", "board_hide", "briefing", "todo_list", "plan_day", "plan_items", "todo_add", "todo_done",
+BOARD_TOOLS = {"board_show", "board_hide", "briefing", "todo_list", "todo_ahead", "plan_day", "plan_items", "todo_add", "todo_done",
                "todo_undo", "todo_remove", "todo_clear_done", "board_run", "reminder", "reminder_list",
                "focus_start", "focus_stop"}
 
 
+_LISTISH = (r"(?:to ?do(?:s| list)?|todo(?:s| list)?|planner|board|dashboard|overview board|mission|today's mission|"
+             r"checklist|task list|tasks|my list|the list|list|plan|schedule|agenda)")
+_ADD_LEAD = re.compile(r"^(?:(?:can|could|will|would|please|pls|kindly|just|also|and|now)\s+)*(?:you\s+)?(?:please\s+)?"
+                       r"(?:add|put|note|write|save|jot|schedule|place)(?:\s+down)?(?:\s+(?:it|this|that))?\s+")
+
+
+def _todo_text(t: str) -> str | None:
+    """"can add in to do list to deploy the new version of Polani mono in my planner in jarvis overview board"
+    -> "deploy the new version of Polani mono". None if this isn't adding to the list."""
+    m = _ADD_LEAD.match(t)
+    if not m or not re.search(r"\b" + _LISTISH + r"\b", t[m.end():]):
+        return None
+    rest = t[m.end():]
+    # "in/to/on my to do list (to)" at the front
+    rest = re.sub(r"^(?:(?:in|into|to|on|onto|in the|to the|on the)\s+)?(?:my\s+|the\s+|today's\s+|jarvis\s+)*"
+                  + _LISTISH + r"(?:\s+(?:for\s+)?(?:today|tomorrow))?(?:\s+(?:to|that|for|about))?\s+", "", rest)
+    # "... in my planner in jarvis overview board" at the end (as many as there are)
+    for _ in range(3):
+        rest = re.sub(r"\s+(?:in|into|to|on|onto|of)\s+(?:my\s+|the\s+|today's\s+|jarvis\s+|overview\s+)*"
+                      + _LISTISH + r"(?:\s+(?:for\s+)?today)?$", "", rest)
+    rest = rest.strip(" ,.")
+    return rest if len(rest) >= 3 and not re.fullmatch(_LISTISH, rest) else None
+
+
 def _board(t: str) -> Intent | None:
     t = re.sub(r"\bto-do\b", "to do", t)
+    t = re.sub(r"\btodays\b", "today's", t)
     # reminders: "remind me at 5 to call Ali", "remind me to stretch in 20 minutes"
     if re.fullmatch(r"(?:what are|show(?: me)?|list|tell me|read)(?: all)?(?: of)? my reminders(?: for today| today)?|"
                     r"(?:any|my) reminders(?: today)?|do i have (?:any )?reminders(?: today| set)?", t):
@@ -750,23 +775,39 @@ def _board(t: str) -> Intent | None:
                     r"(?:give|show)(?: me)? (?:my |the )?(?:status|daily status|status report|summary of (?:my |the )?day)"
                     r"|status report|(?:what(?:'s| is) )?(?:the )?(?:status|update) (?:for |of )?today|"
                     r"what(?:'s| is) on my (?:plate|agenda)(?: today)?|how(?:'s| is) my day(?: looking)?(?: today)?|"
-                    r"(?:give me|show me) (?:an |the )?overview|where do (?:i|we) stand(?: today)?)", t):
+                    r"(?:give me|show me) (?:an |the )?overview|where do (?:i|we) stand(?: today)?)", t) \
+            or re.fullmatch(r"(?:show|open|bring up|display|pull up|put up)(?: me)?(?: it| that| this| them)?"
+                            r"(?: (?:in|on|at))? (?:the |my )?(?:jarvis )?(?:overview )?(?:board|dashboard|planner|"
+                            r"overview|command (?:center|centre))(?: now)?", t):
         return Intent("board_show", {"view": "all"})
+    # what's planned for tomorrow / Monday
+    m = re.fullmatch(r"(?:(?:and|so|ok|okay)\s+)?(?:(?:what(?:'s| is| are)|tell me|show me|read|give me|read out)(?: me)? )?"
+                     r"(?:my |the )?(?:tasks?|to ?dos?|to ?do list|list|plans?|plan|schedule|agenda)"
+                     r"(?: for| on)? (?P<d>tomorrow|the day after tomorrow|monday|tuesday|wednesday|thursday|friday|"
+                     r"saturday|sunday|this week|the week)|"
+                     r"what(?:'s| is| do i have)(?: planned| on)?(?: for)? (?P<d2>tomorrow|monday|tuesday|wednesday|"
+                     r"thursday|friday|saturday|sunday|this week)", t)
+    if m:
+        return Intent("todo_ahead", {"day": (m.group("d") or m.group("d2") or "").replace("the ", "")})
     if re.fullmatch(r"(?:(?:show|open|read|tell|give|bring up|display|read out)(?: me)? (?:my |the |today's )?"
                     r"(?:to ?dos?|to ?do list|tasks|task list|list|checklist)" + _TODAY +
                     r"|what(?:'s| is) (?:on )?(?:my |the )?(?:to ?do )?list" + _TODAY +
                     r"|what do i (?:have|need|still need|still have) to do" + _TODAY +
                     r"|what(?:'s| is) (?:still )?(?:left|pending|remaining)(?: to do)?(?: for today| today| on my list)?"
                     r"|(?:my )?to ?do(?:s| list)" + _TODAY + r"|what are my tasks" + _TODAY +
-                    r"|what(?:'s| is) (?:on )?(?:the |my )?agenda" + _TODAY + r"|how many (?:things|tasks) are left)", t):
+                    r"|what(?:'s| is) (?:on )?(?:the |my )?agenda" + _TODAY + r"|how many (?:things|tasks) are left"
+                    r"|(?:(?:tell|give|read|show)(?: me)? )?(?:my |the )?(?:today's |todays )?(?:tasks?|to ?dos?)"
+                    r"(?: for today| today| for the day| list)?|what(?:'s| is| are) my (?:today's )?(?:tasks?|to ?dos?)"
+                    r"(?: for today| today)?|what(?:'s| is) (?:on )?today's mission)", t):
         return Intent("todo_list")
-    m = re.match(r"^(?:today i(?:'ll| will| need to| have to| want to| got to| gotta| should| must| am going to|'m going to)|"
-                 r"for today i (?:need|have|want)(?: to)?|my (?:plan|to ?dos?|to ?do list|tasks?)(?: for today| today)? "
+    m = re.match(r"^(?:(?:today|tomorrow) i(?:'ll| will| need to| have to| want to| got to| gotta| should| must| am going to|'m going to)|"
+                 r"for (?:today|tomorrow) i (?:need|have|want)(?: to)?|my (?:plan|to ?dos?|to ?do list|tasks?)(?: for today| today| for tomorrow| tomorrow)? "
                  r"(?:is|are|will be)|today's plan is|the plan (?:for today )?is|plan for today(?: is)?|"
                  r"here(?:'s| is) (?:my|the) (?:plan|list)(?: for today)?|add (?:these|this|the following)(?: things)? "
                  r"to (?:my |the )?(?:to ?do )?list|things (?:i need )?to do today(?: are)?)[\s:,-]+(?P<x>.+)$", t)
     if m:
-        return Intent("plan_items", {"text": m.group("x")})
+        tomorrow = re.match(r"^(?:for )?tomorrow|^my (?:plan|to ?dos?|to ?do list|tasks?) (?:for )?tomorrow", t)
+        return Intent("plan_items", {"text": ("tomorrow " if tomorrow else "") + m.group("x")})
     if re.fullmatch(r"(?:let's |lets |help me |can you help me )?plan (?:my |the |out my |out the )?(?:day|today)|"
                     r"plan today|(?:make|create|build|set up) (?:my |a |today's |the )?(?:to ?do list|plan|list)"
                     r"(?: for today)?|start my day|let's start the day|lets start the day|plan my to ?dos?", t):
@@ -777,6 +818,9 @@ def _board(t: str) -> Intent | None:
                  r"[\s:,-]+(?P<x>.+)$", t)
     if m:
         return Intent("todo_add", {"text": m.group("x")})
+    loose = _todo_text(t)  # any other way of saying it: "can add in to do list to deploy X in my planner"
+    if loose:
+        return Intent("todo_add", {"text": loose})
     m = re.match(r"^(?:remove|delete|drop|scratch|take) (?P<x>.+?) (?:from|off|out of) (?:my |the |today's )?"
                  + _LIST_WORD + r"$", t)
     if m:

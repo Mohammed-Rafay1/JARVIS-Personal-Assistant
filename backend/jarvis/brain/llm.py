@@ -48,6 +48,10 @@ def system_prompt(address_as: str) -> str:
         "- You can only act through tools. Never say you did, are doing or activated something, or describe the "
         "computer's state, unless a tool result says so; if no tool fits, say you can't do that yet.\n"
         "- You cannot send email yourself; draft_email shows a draft that the user confirms.\n"
+        "- You cannot add, change, tick off or remove items on the user's to-do list, planner or board, or set "
+        "reminders, yourself. Never say you added, scheduled, saved or noted anything. If they want something on "
+        "the list, tell them to say: add, then the task, to my list. Answer questions about their tasks only from "
+        "the planner facts you are given; if none are given or the task isn't there, say it isn't on the list.\n"
         "- Never make up live facts: weather, news, prices, scores, or anything after your training. For those "
         "say you can look it up (the user can say \"search it\").\n"
         "- What you can do: open apps, files, folders and websites; close apps and folder windows; create and edit "
@@ -174,10 +178,12 @@ class LLM:
         return {"temperature": 0.4, "num_ctx": 2048, "num_predict": 200}
 
     async def chat(self, history: list[dict], tools: list[dict],
-                   max_tokens: int = 200) -> AsyncIterator[tuple[str, Any]]:
-        """Yields ("text", chunk) and ("tool", (name, args))."""
+                   max_tokens: int = 200, context: str = "") -> AsyncIterator[tuple[str, Any]]:
+        """Yields ("text", chunk) and ("tool", (name, args)). context: facts for this question only (the
+        user's planner), placed just before it so the cached start of the prompt stays the same."""
+        extra = [{"role": "system", "content": context}] if context else []
         msgs = ([{"role": "system", "content": system_prompt(self.address_as)}]
-                + style_examples(self.address_as) + history)
+                + style_examples(self.address_as) + history[:-1] + extra + history[-1:])
         body = {"model": self.model, "messages": msgs, "tools": tools, "stream": True,
                 "keep_alive": self.keep_alive,
                 "options": {**self._opts(), "num_predict": max_tokens, "temperature": self.chat_temperature}}

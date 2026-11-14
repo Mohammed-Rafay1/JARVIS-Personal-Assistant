@@ -1,4 +1,4 @@
-﻿"""Runs the board: what's on it, when it opens, and the conversations around it (see board.py for the store
+"""Runs the board: what's on it, when it opens, and the conversations around it (see board.py for the store
 and the words). Jarvis owns one Board; app.py hands it the board commands and a few events (an email sent,
 a WhatsApp message sent, a Claude Code task started) so items it was doing get ticked off."""
 from __future__ import annotations
@@ -112,6 +112,8 @@ class Board:
             "focus": {"until": int(self.focus_until * 1000), "minutes": self.focus_minutes}
             if self.focus_until > time.time() else None,
             "log": day.get("log", [])[-8:][::-1],
+            "ahead": [{"day": B.day_name(d, now.date()).capitalize(),
+                       "items": [{"id": i["id"], "text": i["text"]} for i in items]} for d, items in self.store.ahead(7)],
             "active": self.active,
         }
 
@@ -242,11 +244,20 @@ class Board:
         elif a == "focus_stop":
             await self.j.board_say(self.stop_focus())
 
-    def _add(self, text: str) -> dict:
+    def _add(self, text: str, on: dt.date | None = None) -> dict:
+        """Put one item on the list: today's, or the day it names ("tomorrow", "on Monday"). The item gets a
+        "day" key (not stored) saying which day, for what Jarvis says back."""
         from ..brain.intents import parse
 
-        owner, kind, tool, args = B.classify(text, lambda s: parse(s, self.j.cfg["music"]["default_service"]))
-        return self.store.add(text, owner, kind, tool, args)
+        day, clean = B.when_day(text, dt.date.today())
+        on = on or day
+        owner, kind, tool, args = B.classify(clean, lambda s: parse(s, self.j.cfg["music"]["default_service"]))
+        it = self.store.add(clean, owner, kind, tool, args, on=on)
+        return {**it, "day": on}
+
+    def day_words(self, on: dt.date | None) -> str:
+        """" for tomorrow", " for Monday", or "" for today."""
+        return f" for {B.day_name(on, dt.date.today())}" if on and on > dt.date.today() else ""
 
     # ================================================================== briefing and planning
     async def brief_text(self) -> str:
@@ -394,19 +405,29 @@ class Board:
         await self.j.board_say(Result(f"{brief} {question}", pending={"kind": "plan_today"}), follow=True)
 
     async def take_plan(self, raw: str, source: str = "") -> Result | None:
-        texts = B.split_plan(raw)
+        # "tomorrow I need to..." puts the whole plan on tomorrow; otherwise each item can name its own day
+        whole, raw2 = B.when_day(raw, dt.date.today()) if re.match(r"\s*(?:for |on )?(?:tomorrow|the day after)", raw,
+                                                                   re.I) else (None, raw)
+        texts = B.split_plan(raw2)
         if not texts:
             return None
-        added = [self._add(t) for t in texts]
+        added = [self._add(t, on=whole) for t in texts]
         day = self.store.day()
         day["source"] = source or day.get("source", "")
         self.store.note(f"Plan: {len(added)} item{'s' if len(added) != 1 else ''} added")
-        yours = [i["text"] for i in added if i["owner"] == "you"]
-        mine = [i for i in added if i["owner"] == "jarvis"]
-        n = len(added)
-        say = [f"Got it, {self.sir}. {n} thing{'s' if n != 1 else ''} for today."]
+        later = [i for i in added if i["day"]]
+        added_today = [i for i in added if not i["day"]]
+        yours = [i["text"] for i in added_today if i["owner"] == "you"]
+        mine = [i for i in added_today if i["owner"] == "jarvis"]
+        n = len(added_today)
+        say = [f"Got it, {self.sir}. {n} thing{'s' if n != 1 else ''} for today." if n else f"Got it, {self.sir}."]
         if yours:
             say.append(f"On your list: {B.listing(yours, 5)}.")
+        by_day: dict = {}
+        for i in later:
+            by_day.setdefault(i["day"], []).append(i["text"])
+        for d, texts_on in sorted(by_day.items()):
+            say.append(f"For {B.day_name(d, dt.date.today())}: {B.listing(texts_on, 4)}.")
         pending = None
         if mine:
             say.append(f"I can take care of {B.listing([i['text'] for i in mine], 4)} myself. "
@@ -576,6 +597,34 @@ class Board:
         done = sum(i["status"] == "done" for i in items)
         return f"*Today: {done}/{len(items)} done*\n" + "\n".join(lines)
 
+    def ahead_result(self, day: dt.date | None = None) -> Result:
+        """What's planned for tomorrow (or another day), or for the week ahead."""
+        today = dt.date.today()
+        ahead = [(d, items) for d, items in self.store.ahead(7) if day is None or d == day]
+        if not ahead:
+            when = B.day_name(day, today) if day else "the coming days"
+            return Result(f"Nothing planned for {when} yet, {self.sir}. Say something like: add call the bank "
+                          f"for {B.day_name(day, today) if day else 'tomorrow'}.", icon="board")
+        parts = [f"For {B.day_name(d, today)}: {B.listing([i['text'] for i in items], 5)}." for d, items in ahead]
+        return Result(" ".join(parts), icon="board")
+
+    def context_text(self) -> str:
+        """The list, plans ahead and reminders, as plain facts for the language model (so it answers "what's
+        my task tomorrow?" from the real list instead of guessing)."""
+        today = dt.date.today()
+        lines = [f"Today ({today.strftime('%A %d %B')}):"]
+        items = self.store.items
+        lines += [f"- {i['text']} ({'done' if i['status'] == 'done' else 'Jarvis is doing it' if i['owner'] == 'jarvis' else 'to do'})"
+                  for i in items] or ["- nothing yet"]
+        for d, its in self.store.ahead(7):
+            lines.append(f"{B.day_name(d, today).capitalize()} ({d.strftime('%A %d %B')}):")
+            lines += [f"- {i['text']}" for i in its]
+        ups = self.store.upcoming(time.time())
+        if ups:
+            lines.append("Reminders:")
+            lines += [f"- {dt.datetime.fromtimestamp(r['at']).strftime('%A %I:%M %p')}: {r['text']}" for r in ups[:5]]
+        return "\n".join(lines)
+
     def list_result(self) -> Result:
         items = self.store.items
         if not items:
@@ -609,7 +658,8 @@ class Board:
                               "call Ali.", icon="board")
             it = self._add(what)
             self.push_soon()
-            return Result(f"I've put {it['text']} on today's list. Give me a time if you'd like a reminder too, "
+            where = f"the list{self.day_words(it['day'])}" if it["day"] else "today's list"
+            return Result(f"I've put {it['text']} on {where}. Give me a time if you'd like a reminder too, "
                           "like: remind me at 5 to call Ali.", icon="board")
         what, when = got
         self.store.remind(what, when.timestamp())
@@ -709,8 +759,9 @@ class Board:
             await self.morning()
             return
         evening = B.parse_hhmm(self.cfg.get("evening_at", "18:30"), dt.time(18, 30))
+        quiet = time.monotonic() - getattr(self.j, "last_heard", 0.0) > 120  # not in the middle of talking to you
         if self.cfg.get("evening", True) and not day.get("wrapped") and now.time() >= evening and day["items"] \
-                and self._free():
+                and self._free() and quiet:
             day["wrapped"] = True
             self.store.save()
             await self._evening()

@@ -208,6 +208,11 @@ function renderProjects(ps) {
 }
 
 function renderTimeline(d) {
+  const ahead = (d.ahead || []).flatMap((g) => g.items.map((i, n) => el('li', {},
+    el('span', { class: 't' }, n === 0 ? g.day.slice(0, 9) : ''), el('span', {}, i.text,
+      el('button', { class: 'x', title: 'Remove', onclick: () => act('remove', { id: i.id }) }, '×')))));
+  $('ahead').replaceChildren(...(ahead.length ? ahead :
+    [el('li', { class: 'none' }, 'Nothing planned yet. Try “add call the bank for tomorrow”.')]));
   $('reminders').replaceChildren(...(d.reminders && d.reminders.length ? d.reminders.map((r) =>
     el('li', {}, el('span', { class: 't' }, `${r.day ? r.day + ' ' : ''}${r.at}`), el('span', {}, r.text))) :
     [el('li', { class: 'none' }, 'None set. Try “remind me at 5 to call Ali”.')]));

@@ -277,6 +277,8 @@ kbd { font: 10px var(--mono); color: var(--dim); border: 1px solid var(--edge-so
 .tl li { display: grid; grid-template-columns: 70px 1fr; gap: 10px; padding: 4px 6px; font-size: 13px; color: #D7ECFA; }
 .tl li .t { font: 11.5px var(--mono); color: var(--c); padding-top: 1px; }
 .tl li.none { display: block; color: var(--faint); font-size: 12.5px; }
+.tl li .x { margin-left: 6px; }
+.tl li:hover .x { opacity: 1; }
 .focus { display: flex; align-items: center; gap: 12px; padding: 8px 6px 4px; flex-wrap: wrap; }
 .focus .count { font: 300 34px/1 var(--mono); color: var(--c); text-shadow: 0 0 16px rgba(0, 229, 255, .55); }
 .focus .fl { font: 600 10.5px var(--mono); letter-spacing: .22em; text-transform: uppercase; color: var(--c); }

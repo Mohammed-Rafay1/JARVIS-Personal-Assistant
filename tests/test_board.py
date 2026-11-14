@@ -304,3 +304,76 @@ def test_yes_to_replies_asks_which_one(jarvis, monkeypatch):
     asyncio.run(j.handle_text("show my board", typed=True))
     asyncio.run(j.handle_text("yes", typed=True))
     assert said[-1].startswith("Which one first? 1, Murtaza Khalid") and j.pending["kind"] == "reply_list"
+
+
+# ------------------------------------------------------------------------------------------- 14 Nov call log
+@pytest.mark.parametrize("said,tool,text", [
+    ("can add in to do list to deploy the new version of Polani mono project in my planner in jarvis overview board",
+     "todo_add", "deploy the new version of polani mono project"),
+    ("can you add call ali in my planner", "todo_add", "call ali"),
+    ("show me in board", "board_show", None), ("show it on the board", "board_show", None),
+    ("Please tell me my today's task", "todo_list", None), ("And, my task for tomorrow", "todo_ahead", None),
+    ("what do I have planned for monday", "todo_ahead", None),
+])
+def test_call_log_phrases(said, tool, text):
+    i = parse(said)
+    assert i is not None and i.tool == tool and (text is None or i.args["text"] == text)
+
+
+def test_items_can_be_for_tomorrow_and_arrive_on_the_day(tmp_path):
+    day = [dt.date(2026, 11, 14)]
+    s = B.Store(tmp_path / "b.json", today=lambda: day[0])
+    s.add("Call Ali")
+    when, text = B.when_day("deploy Polani mono tomorrow", day[0])
+    s.add(text, on=when)
+    assert [i["text"] for i in s.items] == ["Call Ali"]
+    assert [(d.isoformat(), [i["text"] for i in its]) for d, its in s.ahead()] == [("2026-11-15", ["Deploy Polani mono"])]
+    day[0] = dt.date(2026, 11, 15)
+    s2 = B.Store(tmp_path / "b.json", today=lambda: day[0])
+    assert sorted(i["text"] for i in s2.items) == ["Call Ali", "Deploy Polani mono"]   # planned + carried over
+
+
+def test_adding_for_tomorrow_says_so(jarvis):
+    j, b, said, _ = jarvis
+    asyncio.run(j.handle_text("add deploy Polani mono for tomorrow to my list", typed=True))
+    assert said[-1] == "Added Deploy Polani mono to the list for tomorrow." and b.store.items == []
+    asyncio.run(j.handle_text("what's my plan for tomorrow", typed=True))
+    assert said[-1] == "For tomorrow: deploy Polani mono."
+
+
+def test_the_model_gets_the_planner_and_cannot_claim_it_added(jarvis, monkeypatch):
+    j, b, said, _ = jarvis
+    b.store.add("Meeting with CCL's CTO 3pm", on=dt.date.today() + dt.timedelta(days=2))
+    seen = {}
+
+    class LLM:
+        model = "fake"
+
+        async def loaded(self):
+            return True
+
+        async def available(self):
+            return True
+
+        async def chat(self, history, tools, max_tokens=200, context=""):
+            seen["context"] = context
+            for chunk in ["Your meeting with CCL's CTO is at 3pm. ", "I've added it to your planner as well. ", "Done."]:
+                yield "text", chunk
+    j.llm = LLM()
+    j.cfg["llm"] = {}
+    spoken = []
+    monkeypatch.setattr(j, "_queue_speech", lambda s, filler=False: spoken.append(s))
+
+    async def wait():
+        return None
+    monkeypatch.setattr(j, "_wait_speech", wait)
+    asyncio.run(j.handle_text("when is my meeting with CCL's CTO?", typed=True))
+    assert "Meeting with CCL's CTO 3pm" in seen["context"]
+    assert not any("added it" in s for s in spoken) and any("say add" in s for s in spoken)
+
+
+def test_awesome_gets_a_reply_not_a_shrug(jarvis):
+    j, b, said, _ = jarvis
+    j._heard_conf = -0.78
+    asyncio.run(j.handle_text("Awesome."))
+    assert said[-1] == "Glad you like it, sir."
