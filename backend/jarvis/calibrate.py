@@ -355,10 +355,22 @@ def _voiceprint(sess: Session, gain: float) -> dict | None:
     threshold = choose_match_threshold(held_out, others + room)
     sid.threshold = threshold
     sid.save(ROOT / VOICEPRINT, held_out=np.array(held_out), others=np.array(others or [0.0]))
-    # only lock other voices out if it recognises you nearly every time: missing you is the worse mistake
-    reliable = sum(s >= threshold for s in held_out) >= 0.8 * len(held_out) and float(np.median(held_out)) >= 0.5
+    # Judge it on what Jarvis actually scores while listening: 1.5-3 s stretches of your speech against the
+    # same lengths of other voices and the room. (15 Nov: whole recordings looked perfect, you 0.9 vs others
+    # 0.4, but live 1.5-3 s clips of you scored 0.2-0.6 and other voices up to 0.87: on a quiet voice and a
+    # noisy mic the voiceprint was mostly measuring the mic's noise, and it locked the user out.)
+    short_you = [sid.score(a[i:i + w]) for a in lines for w in (int(1.5 * SR), 3 * SR)
+                 for i in range(0, max(1, len(a) - w) + 1, SR // 2)]
+    short_other = [sid.score(p) for p in pieces(np.clip(ov * gain, -1, 1)) if p.size >= SR] if ov is not None else []
+    short_other += [sid.score(p) for c, a in sess.background if c in ("silence", "noise")
+                    for p in pieces(np.clip(a * gain, -1, 1)) if p.size >= SR]
+    gap = float(np.percentile(short_you, 10)) - (float(np.percentile(short_other, 95)) if short_other else 0.45)
+    reliable = (ov is not None and gap >= 0.1 and sum(s >= threshold for s in held_out) >= 0.8 * len(held_out))
+    if reliable:  # live clips decide where "you" starts
+        sid.threshold = threshold = round(float(np.percentile(short_you, 10)) - gap * 0.4, 2)
+        sid.save(ROOT / VOICEPRINT, held_out=np.array(held_out), others=np.array(others or [0.0]))
     return {"yours": held_out, "others": others, "room": room, "threshold": threshold, "sid": sid,
-            "reliable": reliable}
+            "reliable": reliable, "short_you": short_you, "short_other": short_other}
 
 
 def _finish(cfg: dict, model, name: str, stt, sess: Session, vp, wake_phrase) -> int:
@@ -439,10 +451,13 @@ def _finish(cfg: dict, model, name: str, stt, sess: Session, vp, wake_phrase) ->
                   f"(threshold {vprint['threshold']:.2f})")
         else:
             print(f"  other voices         not recorded (skipped); using a safe threshold of {vprint['threshold']:.2f}")
+        sy, so = vprint.get("short_you") or [0.0], vprint.get("short_other") or []
+        print(f"  live-length clips    you {np.percentile(sy, 10):.2f}-{np.median(sy):.2f}"
+              + (f" vs other voices / room up to {np.percentile(so, 95):.2f}" if so else ""))
         if not vprint["reliable"]:
-            print("  ! Your voiceprint isn't reliable enough yet, so Jarvis won't use it to lock out other voices")
-            print("    (it would risk ignoring you). Run this again closer to the mic, in a quieter spot, and read")
-            print("    the sentences in your normal voice.")
+            print("  ! Your voiceprint can't yet tell you apart from other voices on short clips, so Jarvis won't")
+            print("    use it (it would risk ignoring you). It needs a clearer voice: sit closer to the mic or use")
+            print("    a headset, speak at your normal level, and don't skip the other-voices step.")
         elif min(ys) < vprint["threshold"]:
             print("  ! A few of your clips scored low (usually a whisper or a very short phrase). Speak at your")
             print("    normal level to Jarvis; if it misses you often, run this again.")

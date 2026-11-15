@@ -19,7 +19,7 @@ mic:
   auto_level: true           # keep your voice at a steady level (learns from your speech only; each mic remembered)
 
 voice_id:                    # recognise your voice (calibrate_wake.bat makes your voiceprint)
-  enabled: true
+  enabled: false
   model: "data/models/speaker/campplus_en_voxceleb_16k.onnx"
   profile: "data/voice/voiceprint.npz"
   match_threshold: 0.61      # voiceprint score that counts as you (you ~0.8-1.0, others well under 0.5)
