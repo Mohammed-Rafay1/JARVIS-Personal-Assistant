@@ -780,6 +780,14 @@ def _board(t: str) -> Intent | None:
                             r"(?: (?:in|on|at))? (?:the |my )?(?:jarvis )?(?:overview )?(?:board|dashboard|planner|"
                             r"overview|command (?:center|centre))(?: now)?", t):
         return Intent("board_show", {"view": "all"})
+    # any other way of asking for it: "give me the overall overview on the board", "opened the board" (Whisper's
+    # past tense of "open"), "overview of my emails and Claude Code projects" (15 Nov: those opened only the
+    # projects, or went to the chat model, which said it couldn't open a board)
+    if len(t.split()) <= 18 and re.search(r"\b(?:board|dashboard|overview|command (?:center|centre)|hud)\b", t) \
+            and re.search(r"\b(?:show|showing|open|opened|opens|give|gave|bring|display|pull|put up|see|view|load|"
+                          r"launch|start|get|want|need|overall)\b", t) \
+            and not re.match(r"^(?:add|put|write|note|remove|delete|drop|mark|tick|cross|check off|close|hide)\b", t):
+        return Intent("board_show", {"view": "all"})
     # what's planned for tomorrow / Monday
     m = re.fullmatch(r"(?:(?:and|so|ok|okay)\s+)?(?:(?:what(?:'s| is| are)|tell me|show me|read|give me|read out)(?: me)? )?"
                      r"(?:my |the )?(?:tasks?|to ?dos?|to ?do list|list|plans?|plan|schedule|agenda)"
