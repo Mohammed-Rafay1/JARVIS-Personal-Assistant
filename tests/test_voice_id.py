@@ -140,10 +140,22 @@ def test_voiced_part_drops_the_silence():
 
 # ------------------------------------------------------------------------------------------- in Jarvis
 class _Speaker:
-    ready, threshold = True, 0.6
+    ready, threshold, short_threshold, wake_reject = True, 0.78, 0.71, 0.66
 
     def __init__(self, score):
         self.s = score
+
+    def score(self, audio):
+        return self.s
+
+    def embed(self, audio):
+        return np.ones(4, np.float32) / 2
+
+    def score_embedding(self, e):
+        return self.s
+
+    def adapt(self, e):
+        self.adapted = getattr(self, "adapted", 0) + 1
 
     def is_me(self, audio, margin=0.0):
         return self.s >= self.threshold - margin, self.s
@@ -163,3 +175,91 @@ def test_someone_elses_hey_jarvis_is_ignored():
     j.speaker = _Speaker(0.31)
     j.cfg["voice_id"]["lock_wake"] = False
     assert j._is_you(frames, "wake")      # switched off in config.yaml: everyone may wake it
+
+
+# ------------------------------------------------------------------------------------------- "not my boss"
+def _jarvis():
+    from jarvis import app as app_mod
+
+    j = app_mod.Jarvis({"address_as": "sir", "music": {"default_service": "youtube"}, "apps": {"aliases": {}},
+                        "websites": {}, "voice_id": {}}, type("UI", (), {"send": lambda s, m: None})())
+    j.endpointer = Endpointer()
+    j.endpointer.noise_floor = 60.0
+    return j
+
+
+def command(seconds):
+    return np.concatenate([voice() for _ in range(int(seconds / 0.08))]).astype(np.float32) / 32768
+
+
+def test_a_whole_command_needs_the_full_score_a_short_one_less():
+    j = _jarvis()
+    j.speaker = _Speaker(0.74)
+    assert j._owner_check(command(1.2))            # short: 0.71 is enough
+    assert not j._owner_check(command(3.5))        # whole command: needs 0.78
+    j.speaker = _Speaker(0.80)
+    assert j._owner_check(command(3.5))
+    assert not getattr(j.speaker, "adapted", 0)    # 0.80 isn't sure enough to learn from
+    j.speaker = _Speaker(0.90)
+    assert j._owner_check(command(3.5)) and j.speaker.adapted == 1   # clearly you: learnt
+
+
+def test_a_bare_hey_jarvis_never_gets_not_my_boss():
+    import asyncio
+
+    j = _jarvis()
+    j.speaker = _Speaker(0.60)
+    j.stt = type("STT", (), {"transcribe": lambda s, a, *x: "Hey, Jarvis.", "last_conf": 0.0})()
+    j.player = type("P", (), {"play": lambda s, *a: None, "stop": lambda s: None})()
+    said, handled = [], []
+
+    async def say(t, then_idle=True, follow=False):
+        said.append(t)
+
+    async def handle(t, typed=False):
+        handled.append(t)
+    j.say, j.handle_text = say, handle
+    asyncio.run(j._process_audio(command(0.8)))
+    assert said == [] and handled == ["Hey, Jarvis."]
+
+
+def test_the_live_voiceprint_stays_anchored(tmp_path):
+    from jarvis.audio.speaker import SpeakerID
+
+    sid = SpeakerID.__new__(SpeakerID)
+    sid.profile = np.array([1.0, 0.0], np.float32)
+    sid.live, sid.live_path, sid._learnt = None, tmp_path / "live.npy", 0
+    for _ in range(200):                           # even if every "sure" match pulled the other way
+        sid.adapt(np.array([0.0, 1.0], np.float32))
+    assert float(sid.current @ sid.profile) > 0.8  # the calibrated voiceprint keeps most of the weight
+    assert (tmp_path / "live.npy").exists()
+
+
+def test_someone_elses_command_gets_not_my_boss(monkeypatch):
+    import asyncio
+
+    j = _jarvis()
+    j.speaker = _Speaker(0.40)
+    j.stt = type("STT", (), {"transcribe": lambda s, a, *x: "open chrome", "last_conf": 0.0})()
+    j.player = type("P", (), {"play": lambda s, *a: None, "stop": lambda s: None})()
+    said, handled = [], []
+
+    async def say(t, then_idle=True, follow=False):
+        said.append(t)
+
+    async def handle(t, typed=False):
+        handled.append(t)
+    j.say, j.handle_text = say, handle
+    asyncio.run(j._process_audio(command(2.0)))
+    assert said == ["Sorry, you're not my boss."] and handled == []
+    j.speaker = _Speaker(0.85)
+    said.clear()
+    asyncio.run(j._process_audio(command(2.0)))
+    assert handled == ["open chrome"] and said == []
+
+
+def test_thresholds_from_calibration():
+    t = calibrate.choose_voice_thresholds([0.9, 0.93, 0.87, 0.91], [0.75, 0.78, 0.81], [0.6, 0.72, 0.65], [0.68, 0.6])
+    assert t["reliable"] and 0.72 < t["command"] < 0.87 and 0.68 < t["short"] < 0.75 and t["wake"] < 0.75
+    assert not calibrate.choose_voice_thresholds([0.9], [0.8], [], [])["reliable"]          # no other voices heard
+    assert not calibrate.choose_voice_thresholds([0.8], [0.7], [0.82], [0.75])["reliable"]  # they sound alike

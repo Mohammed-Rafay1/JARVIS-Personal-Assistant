@@ -19,14 +19,17 @@ mic:
   auto_level: true           # keep your voice at a steady level (learns from your speech only; each mic remembered)
 
 voice_id:                    # recognise your voice (calibrate_wake.bat makes your voiceprint)
-  enabled: false
-  model: "data/models/speaker/campplus_en_voxceleb_16k.onnx"
+  enabled: true
+  model: "data/models/speaker/wespeaker_en_voxceleb_resnet34.onnx"
   profile: "data/voice/voiceprint.npz"
-  match_threshold: 0.61      # voiceprint score that counts as you (you ~0.8-1.0, others well under 0.5)
-  lock_wake: true            # only your voice wakes Jarvis (not other people, TV or videos)
-  lock_listening: true       # other voices don't start or stretch your sentence: Jarvis waits for you
-  lock_barge_in: true        # only your voice cuts in while Jarvis is speaking
-  listen_margin: 0.08        # a little more lenient mid-sentence than for the wake word
+  match_threshold: 0.75      # a whole spoken command must score this to count as you
+  short_threshold: 0.70      # a short command (about a second of voice)
+  wake_reject: 0.64          # "Hey Jarvis" below this is clearly someone else
+  lock_wake: true            # "Hey Jarvis" from a clearly different voice: "Sorry, you're not my boss"
+  lock_commands: true        # a spoken command that isn't yours is refused the same way
+  lock_barge_in: true        # a clearly different voice can't cut in while Jarvis speaks
+  lock_listening: false      # mid-sentence checks on 1.5 s of audio (too little voice to be reliable)
+  stranger_reply: "Sorry, you're not my boss."
 
 hotkey: "Control+Alt+J"      # talk or type
 listening:

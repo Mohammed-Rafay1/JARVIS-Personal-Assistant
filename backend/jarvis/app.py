@@ -357,14 +357,19 @@ class Jarvis:
         if not self.speaker.ready:
             health["voice_id"] = "not calibrated (run calibrate_wake.bat)"
             return
-        self.voice_tracker = Tracker(self.speaker, margin=float(v.get("listen_margin", 0.08)))
-        self.endpointer.require_me = bool(v.get("lock_listening", True))
-        health["voice_id"] = f"on (threshold {self.speaker.threshold:.2f})"
+        # a short command, and "Hey Jarvis" itself, carry less voice: lower bars for those
+        self.speaker.short_threshold = float(v.get("short_threshold", self.speaker.threshold - 0.04))
+        self.speaker.wake_reject = float(v.get("wake_reject", self.speaker.threshold - 0.12))
+        if v.get("lock_listening", False):  # mid-sentence checks on 1.5 s of audio: off unless you turn it on
+            self.voice_tracker = Tracker(self.speaker, margin=float(v.get("listen_margin", 0.08)))
+            self.endpointer.require_me = True
+        health["voice_id"] = f"on (commands {self.speaker.threshold:.2f}, wake {self.speaker.wake_reject:.2f})"
 
     def _voice_lock(self, what: str) -> bool:
-        """Is the voiceprint in use for this ("wake", "listening", "barge_in")?"""
+        """Is the voiceprint in use for this ("wake", "commands", "barge_in", "listening")?"""
+        default = what != "listening"
         return self.speaker is not None and self.speaker.ready and \
-            bool((self.cfg.get("voice_id", {}) or {}).get(f"lock_{what}", True))
+            bool((self.cfg.get("voice_id", {}) or {}).get(f"lock_{what}", default))
 
     def _recent(self, frames: list[np.ndarray], most: int = 25) -> tuple[np.ndarray, int]:
         """The last ~2 s as it was heard (continuous: the voiceprint model needs natural speech, pauses and
@@ -383,10 +388,11 @@ class Jarvis:
         audio, voiced = self._recent(frames)
         if voiced < 6:  # under half a second of voice: too little to judge, don't block
             return True
-        ok, score = self.speaker.is_me(audio, margin)
+        score = self.speaker.score(audio)
+        ok = score >= self.speaker.wake_reject - margin   # only a clearly different voice is ignored
         if not ok:
             log.info("%s ignored: not your voice (%.2f, needs %.2f)", what.replace("_", "-"), score,
-                     self.speaker.threshold - margin)
+                     self.speaker.wake_reject - margin)
         return ok
 
     async def start(self) -> None:
@@ -553,9 +559,9 @@ class Jarvis:
                     pre = list(self._preroll)[-3:]
                     self.wake_vad.reset()
                     sure = float(self.cfg["wake_word"].get("verify_below", 0.5))
-                    if not self._is_you(list(self._wake_ring), "wake"):
-                        continue  # "Hey Jarvis" from someone else, or a video
-                    if speaking or self.in_call or self.wake.last_score >= sure:
+                    # with your voiceprint, even a sure hit waits for the end of the phrase so the voice can be
+                    # checked on all of it (the model fires partway through "Jarvis")
+                    if speaking or self.in_call or (self.wake.last_score >= sure and not self._voice_lock("wake")):
                         self._verify_wait, self._wake_verifying = 0, False
                         self.loop.call_soon_threadsafe(lambda p=pre: self._wake("voice", p))
                     elif self._verify_wait:
@@ -665,11 +671,6 @@ class Jarvis:
         dur, peak = audio.size / MIC_SR, float(np.max(np.abs(audio))) if audio.size else 0.0
         near = float(self.cfg["wake_word"].get("near_peak", 0.3))
         if 0.4 <= dur <= 3.4 and peak >= near and not self._wake_checking:
-            if self._voice_lock("wake") and audio.size >= 8000:
-                ok, score = self.speaker.is_me(audio)
-                if not ok:  # someone else's short phrase: not worth transcribing
-                    log.debug("backup wake skipped: not your voice (%.2f)", score)
-                    return
             self._wake_checking = True
             self.loop.call_soon_threadsafe(lambda a=audio: asyncio.ensure_future(self._wake_from_text(a)))
 
@@ -693,7 +694,24 @@ class Jarvis:
             log.info("wake accepted (score %.2f): nothing else heard", score)
         else:
             log.info("wake confirmed (score %.2f): %r", score, text)
+        if not await self._wake_owner(audio):
+            return
         self._wake("voice")
+
+    async def _wake_owner(self, audio: np.ndarray) -> bool:
+        """"Hey Jarvis" was heard: is it you? Only a voice that's clearly someone else is turned away (a short
+        phrase is the hardest case for the voiceprint; each command is checked properly afterwards)."""
+        if not self._voice_lock("wake"):
+            return True
+        score = await asyncio.to_thread(self.speaker.score, audio)
+        if score >= self.speaker.wake_reject:
+            log.info("wake voice check: %.2f (ok above %.2f)", score, self.speaker.wake_reject)
+            return True
+        log.info("wake from someone else (voice %.2f, yours is above %.2f)", score, self.speaker.wake_reject)
+        if not self.in_call and self.state == "idle" and self._remote_said is None:
+            self.speak_aloud = True
+            await self.say(self._stranger_reply(), then_idle=True)
+        return False
 
     async def _wake_from_text(self, audio: np.ndarray) -> None:
         from .brain.intents import wake_phrase
@@ -706,6 +724,8 @@ class Jarvis:
         if rest is None or self.in_call or self.state != "idle" or self.muted:
             if text and text.strip():  # what it heard instead, to tune the names it accepts
                 log.info("wake check: no (%r)", text.strip()[:60])
+            return
+        if not await self._wake_owner(audio):
             return
         log.info("wake (whisper): %r", text)
         # "Hey Jarvis, open Chrome" in one breath: skip the greeting and do it
@@ -867,6 +887,9 @@ class Jarvis:
         t0 = time.perf_counter()
         gen = self._speech_gen
         self._recognising = True
+        # who said it, worked out alongside the words (no extra wait)
+        owner = asyncio.ensure_future(asyncio.to_thread(self._owner_check, audio)) \
+            if self._voice_lock("commands") else None
         try:
             text = await asyncio.to_thread(self.stt.transcribe, audio, self._clear_command,
                                            lambda: gen != self._speech_gen)
@@ -880,8 +903,39 @@ class Jarvis:
                 self.ui.send({"type": "unclear"})  # a quiet hint on screen that you weren't understood
             self._go_idle()
             return
+        from .brain.intents import wake_phrase
+
+        # a bare "Hey Jarvis" asks nothing of Jarvis: never answer it with "not my boss" (15 Nov: two quick ones
+        # of the user's, about 0.6 s of voice, scored just under the bar)
+        bare = not normalize(text) or wake_phrase(text) == ""
+        if owner is not None and not await owner and not bare:
+            log.info("command ignored, not your voice: %r", text)
+            self.ui.send({"type": "transcript", "text": text, "final": True})
+            await self.say(self._stranger_reply(), then_idle=True)
+            return
         self.ui.send({"type": "transcript", "text": text, "final": True})
         await self.handle_text(text)
+
+    def _owner_check(self, audio: np.ndarray) -> bool:
+        """Is this spoken command yours? Judged on the whole sentence (a whole sentence is where the
+        voiceprint is reliable); a short one needs a slightly lower score than a long one."""
+        frames = [audio[i:i + 1280] for i in range(0, len(audio) - 1279, 1280)]
+        floor = max(400.0, self.endpointer.noise_floor * 2) / 32768.0
+        voiced = sum(float(np.sqrt(np.mean(f ** 2))) > floor for f in frames) * 0.08
+        if voiced < 0.4:   # hardly any voice: nothing to judge, don't refuse
+            return True
+        emb = self.speaker.embed(audio)
+        score = self.speaker.score_embedding(emb)
+        # the more voice, the surer the score: the short level up to 1.5 s of voice, the full level from 3 s
+        k = float(np.clip((voiced - 1.5) / 1.5, 0.0, 1.0))
+        need = self.speaker.short_threshold + (self.speaker.threshold - self.speaker.short_threshold) * k
+        log.info("voice check: %.2f (needs %.2f, %.1f s of voice)", score, need, voiced)
+        if voiced >= 1.5 and score >= max(need + 0.05, 0.82):
+            self.speaker.adapt(emb)  # clearly you: learn how you sound today (mic, distance, room)
+        return score >= need
+
+    def _stranger_reply(self) -> str:
+        return (self.cfg.get("voice_id", {}) or {}).get("stranger_reply") or "Sorry, you're not my boss."
 
     def _clear_command(self, text: str) -> bool:
         """The fast recogniser's text is a plain command, so the slow re-check can be skipped. Free text
