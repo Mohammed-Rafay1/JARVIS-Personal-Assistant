@@ -229,6 +229,8 @@ class Jarvis:
         self._barge_echo: list[float] = []
         self._barge_run = 0
         self._echo_ratios: deque[float] = deque(maxlen=200)  # how much of Jarvis's voice the mic hears
+        self.speaker = None            # your voiceprint (audio/speaker.py), once calibrated
+        self.voice_tracker = None      # who is talking right now, while Jarvis listens
         self._rethink_run = 0
 
     # A question Jarvis asked ("which one?", "shall I send it?") waits for an answer, but not for ever:
@@ -322,14 +324,66 @@ class Jarvis:
             except Exception as e:
                 log.exception("wake word unavailable")
                 health["wake"] = f"off ({e.__class__.__name__})"
-        self.mic = Mic(float(c.get("mic", {}).get("gain", 1.0)))
+        from .config import DATA
+
+        m = c.get("mic", {})
+        self.mic = Mic(float(m.get("gain", 1.0)), DATA / "voice" / "mic_levels.json", bool(m.get("auto_level", True)))
         self.mic.start()
         health["mic"] = "on"
+        self._load_voiceprint(health)
         self._status("Loading voice…")
         tts_thread.join()
         self.tts = voice.get("tts") or TTS("sapi")
         health["voice"] = self.tts.name
         return health
+
+    def _load_voiceprint(self, health: dict) -> None:
+        """Your voiceprint (audio/speaker.py), if calibration made one: only you wake Jarvis, other voices don't
+        start or stretch your sentence, and only you can cut in while it speaks."""
+        from .config import ROOT
+
+        v = self.cfg.get("voice_id", {}) or {}
+        model, profile = ROOT / v.get("model", ""), ROOT / v.get("profile", "")
+        if not v.get("enabled", True) or not model.is_file():
+            return
+        try:
+            from .audio.speaker import SpeakerID, Tracker
+
+            self.speaker = SpeakerID(model, profile if profile.is_file() else None,
+                                     float(v.get("match_threshold", 0.55)))
+        except Exception as e:
+            log.warning("voice recognition unavailable: %s", e)
+            return
+        if not self.speaker.ready:
+            health["voice_id"] = "not calibrated (run calibrate_wake.bat)"
+            return
+        self.voice_tracker = Tracker(self.speaker, margin=float(v.get("listen_margin", 0.08)))
+        self.endpointer.require_me = bool(v.get("lock_listening", True))
+        health["voice_id"] = f"on (threshold {self.speaker.threshold:.2f})"
+
+    def _voice_lock(self, what: str) -> bool:
+        """Is the voiceprint in use for this ("wake", "listening", "barge_in")?"""
+        return self.speaker is not None and self.speaker.ready and \
+            bool((self.cfg.get("voice_id", {}) or {}).get(f"lock_{what}", True))
+
+    def _voiced(self, frames: list[np.ndarray], most: int = 20) -> np.ndarray:
+        """The frames that carry a voice (not the silence around it), newest last, as float audio."""
+        floor = max(400.0, self.endpointer.noise_floor * 2)
+        keep = [f for f in frames[-most:] if float(np.sqrt(np.mean(f.astype(np.float32) ** 2))) > floor]
+        return (np.concatenate(keep).astype(np.float32) / 32768.0) if keep else np.zeros(0, np.float32)
+
+    def _is_you(self, frames: list[np.ndarray], what: str, margin: float = 0.0) -> bool:
+        """For a wake word or a barge-in: does that voice match yours? True when the voiceprint isn't in use."""
+        if not self._voice_lock(what):
+            return True
+        audio = self._voiced(frames)
+        if audio.size < 8000:  # under half a second of voice: too little to judge, don't block
+            return True
+        ok, score = self.speaker.is_me(audio, margin)
+        if not ok:
+            log.info("%s ignored: not your voice (%.2f, needs %.2f)", what.replace("_", "-"), score,
+                     self.speaker.threshold - margin)
+        return ok
 
     async def start(self) -> None:
         from .brain.llm import LLM
@@ -445,12 +499,13 @@ class Jarvis:
             frame = self.mic.frames.get()
             if self.muted:
                 continue
+            self.mic.hold = bool(self.player and self.player.busy)  # its own voice mustn't steer the mic level
             if self.mode == "off":
                 # Jarvis is working out what you said. If you start talking again (it misheard, or you
                 # changed your mind), drop that attempt and listen afresh.
                 self._preroll.append(frame)
                 if self.in_call and self.state == "thinking" and self.cfg["call"].get("barge_in", True) \
-                        and self._rethink_feed(frame):
+                        and self._rethink_feed(frame) and self._is_you(list(self._preroll), "barge_in", 0.1):
                     pre = list(self._preroll)[-6:]
                     if self._recognising:
                         # still working out the words: you paused mid-sentence and carried on. Keep what
@@ -472,7 +527,8 @@ class Jarvis:
                 elif not self.in_call:  # the greeting and other replies teach it its own echo before a call
                     self._echo_learn(float(np.sqrt(np.mean(frame.astype(np.float32) ** 2))))
                 if speaking and self.in_call and self.cfg["call"].get("barge_in", True):
-                    if self._barge_feed(frame):  # you started talking over Jarvis
+                    # you started talking over Jarvis (and it's your voice, not someone near you, or its own)
+                    if self._barge_feed(frame) and self._is_you(list(self._preroll), "barge_in", 0.12):
                         pre = list(self._preroll)[-5:]
                         self.wake_vad.reset()
                         self.loop.call_soon_threadsafe(lambda p=pre: self._wake("barge-in", p))
@@ -492,6 +548,8 @@ class Jarvis:
                     pre = list(self._preroll)[-3:]
                     self.wake_vad.reset()
                     sure = float(self.cfg["wake_word"].get("verify_below", 0.5))
+                    if not self._is_you(list(self._wake_ring), "wake"):
+                        continue  # "Hey Jarvis" from someone else, or a video
                     if speaking or self.in_call or self.wake.last_score >= sure:
                         self._verify_wait, self._wake_verifying = 0, False
                         self.loop.call_soon_threadsafe(lambda p=pre: self._wake("voice", p))
@@ -508,7 +566,10 @@ class Jarvis:
                 elif not speaking and not self.in_call and self.cfg["wake_word"].get("whisper_backup", True):
                     self._backup_wake_feed(frame)
             elif self.mode == "capture":
-                status = self.endpointer.feed(frame)
+                tracker = self.voice_tracker if self._voice_lock("listening") else None
+                status = self.endpointer.feed(frame, tracker.me() if tracker else None)
+                if tracker:
+                    tracker.feed(frame, self.endpointer.last_speech)
                 now = time.monotonic()
                 if now - sent_levels > 0.06:
                     sent_levels = now
@@ -599,6 +660,11 @@ class Jarvis:
         dur, peak = audio.size / MIC_SR, float(np.max(np.abs(audio))) if audio.size else 0.0
         near = float(self.cfg["wake_word"].get("near_peak", 0.3))
         if 0.4 <= dur <= 3.4 and peak >= near and not self._wake_checking:
+            if self._voice_lock("wake") and audio.size >= 8000:
+                ok, score = self.speaker.is_me(audio)
+                if not ok:  # someone else's short phrase: not worth transcribing
+                    log.debug("backup wake skipped: not your voice (%.2f)", score)
+                    return
             self._wake_checking = True
             self.loop.call_soon_threadsafe(lambda a=audio: asyncio.ensure_future(self._wake_from_text(a)))
 
@@ -651,6 +717,8 @@ class Jarvis:
     def _start_capture(self, timeout: float | None, preroll: list | None = None,
                        carry: list | None = None) -> None:
         self.endpointer.reset(timeout, carry)
+        if self.voice_tracker is not None:
+            self.voice_tracker.reset()
         for f in preroll or []:
             self.endpointer.frames.append(f)
         self.mode = "capture"

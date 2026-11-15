@@ -16,6 +16,17 @@ wake_word:
 
 mic:
   gain: 6.0                  # software boost for a quiet mic; calibrate_wake.bat sets this for you
+  auto_level: true           # keep your voice at a steady level (learns from your speech only; each mic remembered)
+
+voice_id:                    # recognise your voice (calibrate_wake.bat makes your voiceprint)
+  enabled: true
+  model: "data/models/speaker/campplus_en_voxceleb_16k.onnx"
+  profile: "data/voice/voiceprint.npz"
+  match_threshold: 0.55      # voiceprint score that counts as you (you ~0.8-1.0, others well under 0.5)
+  lock_wake: true            # only your voice wakes Jarvis (not other people, TV or videos)
+  lock_listening: true       # other voices don't start or stretch your sentence: Jarvis waits for you
+  lock_barge_in: true        # only your voice cuts in while Jarvis is speaking
+  listen_margin: 0.08        # a little more lenient mid-sentence than for the wake word
 
 hotkey: "Control+Alt+J"      # talk or type
 listening:

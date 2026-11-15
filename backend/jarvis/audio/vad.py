@@ -24,6 +24,7 @@ class Endpointer:
         self.max_frames = int(max_seconds * 1000 / FRAME_MS)
         self.no_speech_frames = int(no_speech_timeout * 1000 / FRAME_MS)
         self.noise_floor = 300.0  # int16 RMS; updated while idle
+        self.require_me = False   # with a voiceprint: only your voice starts a sentence (see feed)
         self.reset()
 
     def reset(self, no_speech_timeout: float | None = None, carry: list[np.ndarray] | None = None) -> None:
@@ -34,6 +35,10 @@ class Endpointer:
         self.started = False
         self.speech_frames = 0
         self.silent_run = 0
+        self.waited = 0           # frames heard before the sentence started (for the no-speech timeout)
+        self.last_speech = False  # whether the last frame sounded like speech (before the voice check)
+        self.last_voice = 0       # how many frames in, your last word ended
+        self.others = 0           # frames of someone else talking (voiceprint said not you)
 
     def observe_idle(self, frame: np.ndarray) -> None:
         rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
@@ -53,25 +58,41 @@ class Endpointer:
                     for i in range(FRAME // SUB))
         return votes >= 2
 
-    def feed(self, frame: np.ndarray) -> str:
-        """Returns 'waiting', 'speaking', 'done' (utterance ready) or 'timeout' (nothing said)."""
+    def feed(self, frame: np.ndarray, me: bool | None = None) -> str:
+        """Returns 'waiting', 'speaking', 'done' (utterance ready) or 'timeout' (nothing said).
+
+        me: the voiceprint's latest verdict (True you, False someone else, None not known yet). Someone else
+        talking counts as silence: their voice neither starts your sentence nor keeps it going, so with people
+        chatting nearby Jarvis waits for you, and stops listening when you stop. With require_me, a voice not
+        yet recognised is held (not thrown away) until the check says it's you."""
         self.frames.append(frame)
-        speech = self._is_speech(frame)
+        speech = self.last_speech = self._is_speech(frame)
+        if speech and me is False:
+            speech = False
+            self.others += 1
         if speech:
             self.speech_frames += 1
             self.silent_run = 0
-            if self.speech_frames >= 2:
+            self.last_voice = len(self.frames)   # your last word so far (others' voices never count)
+            # ~2 s of a voice the check couldn't place (it never answered): listen rather than ignore you
+            if self.speech_frames >= 2 and (self.started or not self.require_me or me is True
+                                            or (me is None and self.speech_frames >= 25)):
                 self.started = True
         else:
             self.silent_run += 1
-            if not self.started and len(self.frames) > 2:
+            if not self.started and len(self.frames) > 2 and me is not False:
                 self.observe_idle(frame)  # the room's noise, between turns of a call
         if not self.started:
-            if len(self.frames) >= self.no_speech_frames:
+            self.waited += 1
+            if self.waited >= self.no_speech_frames:
                 return "timeout"
-            # keep a short pre-roll only
-            if len(self.frames) > 8 and self.speech_frames == 0:
-                self.frames = self.frames[-8:]
+            if self.speech_frames and self.silent_run > 8:   # that voice stopped without being you: start over
+                self.speech_frames = 0
+            # a short pre-roll; while an unrecognised voice is speaking, up to ~3 s of it
+            keep = 8 if self.speech_frames == 0 else 40
+            if len(self.frames) > keep:
+                self.last_voice = max(0, self.last_voice - (len(self.frames) - keep))
+                self.frames = self.frames[-keep:]
             return "waiting"
         need = self.short_silence_frames if self.speech_frames < self.short_speech_frames else self.silence_frames
         if self.silent_run >= need or len(self.frames) >= self.max_frames:
@@ -80,7 +101,11 @@ class Endpointer:
 
     def audio(self) -> np.ndarray:
         """The captured utterance as float32 in [-1, 1]."""
-        frames = self.carry + self.frames
+        mine = self.frames
+        if self.others and self.last_voice:
+            # people kept talking after you stopped: leave their words out, or they'd be transcribed as yours
+            mine = self.frames[:self.last_voice + 3]
+        frames = self.carry + mine
         if not frames:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate(frames).astype(np.float32) / 32768.0

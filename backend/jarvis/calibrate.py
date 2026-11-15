@@ -25,6 +25,19 @@ VERIFIER = "data/voice/wake_verifier.pkl"  # relative to the Jarvis folder, as w
 READ_QUIET = ("Please open the budget spreadsheet and check the totals for last month, "
               "then send a short summary to the team before lunch.")
 READ_NOISE = "I think we should meet on Thursday afternoon to go through the new designs together."
+# for your voiceprint: varied sounds, said the way you talk to Jarvis
+VOICEPRINT_LINES = [
+    "Open my email and tell me who wrote to me this morning.",
+    "Play some relaxing music on Spotify while I finish this report.",
+    "What does my schedule look like for tomorrow afternoon?",
+    "Remind me at five o'clock to call Ali about the project.",
+    "Research the latest news about artificial intelligence on ChatGPT.",
+    "Turn the volume down a little and close the browser, please.",
+    "Show me my board and tell me which emails need a reply.",
+    "Quick brown foxes jump over lazy dogs near the river bank.",
+]
+VOICEPRINT = "data/voice/voiceprint.npz"     # relative to the Jarvis folder, as written to config.yaml
+SPEAKER_MODEL = "data/models/speaker/campplus_en_voxceleb_16k.onnx"
 
 
 # ------------------------------------------------------------------ recording
@@ -83,6 +96,101 @@ class Session:
     def command(self, prompt: str) -> None:
         input(f"\n  {prompt}\n  Press Enter, then say it… ")
         self.commands.append(_record(4.0))
+
+    def sentences(self, n: int) -> None:
+        """Your voiceprint: a few ordinary sentences in your normal voice."""
+        self.lines: list[np.ndarray] = getattr(self, "lines", [])
+        print(f"\n  Read each sentence aloud in your normal voice, as you'd talk to Jarvis ({n} of them).")
+        for i, line in enumerate(VOICEPRINT_LINES[:n]):
+            for attempt in range(2):
+                input(f"\n   [{i + 1}/{n}] Enter, then read:  \"{line}\"\n   ")
+                print("        recording…", end="", flush=True)
+                a = _record(5.0)
+                voiced = voiced_part(a)
+                peak = float(np.max(np.abs(a)))
+                if voiced.size >= SR or attempt:   # at least a second of voice
+                    break
+                print("\r        I barely heard that - once more, a little closer or louder.")
+            print(f"\r        level {_bar(peak)} {peak:.2f}   voice {voiced.size / SR:.1f} s   ")
+            self.lines.append(a)
+
+    def others(self, seconds: float) -> None:
+        """Other voices, so Jarvis can tell them from you."""
+        print("\n  OTHER VOICES - so Jarvis learns to ignore them.")
+        print("  Let someone talk near the laptop, or play a video of people talking (a podcast, the news,")
+        print("  any YouTube talk) at a normal volume. Don't speak yourself during this step.")
+        got = input(f"  Press Enter to start ({seconds:.0f} s), or type s and Enter to skip… ").strip().lower()
+        if got.startswith("s"):
+            self.other_voices = None
+            return
+        print("        recording…", end="", flush=True)
+        a = _record(seconds)
+        rms = float(np.sqrt(np.mean(a ** 2)))
+        print(f"\r        level {_bar(rms * 10)} {rms:.4f}")
+        self.other_voices = a
+
+
+def voiced_part(a: np.ndarray, frame: int = 1280) -> np.ndarray:
+    """Only the parts of a recording with a voice in them (the silence before and after is dropped)."""
+    frames = [a[i:i + frame] for i in range(0, len(a) - frame + 1, frame)]
+    if not frames:
+        return a
+    rms = np.array([float(np.sqrt(np.mean(f ** 2))) for f in frames])
+    floor = max(float(np.percentile(rms, 20)) * 2.5, 0.004)
+    keep = [f for f, r in zip(frames, rms) if r > floor]
+    return np.concatenate(keep) if keep else np.zeros(0, np.float32)
+
+
+def choose_speech_gain(voiced: list[np.ndarray], loud_peaks: list[float]) -> float:
+    """Boost so your normal speech sits around -20 dBFS (RMS 0.1), without clipping a loud voice."""
+    levels = [float(np.sqrt(np.mean(v ** 2))) for v in voiced if v.size]
+    if not levels:
+        return 1.0
+    gain = 0.1 / max(statistics.median(levels), 0.002)
+    if loud_peaks:
+        gain = min(gain, 0.95 / max(max(loud_peaks), 1e-3))
+    return round(float(np.clip(gain, 1.0, 12.0)), 1)
+
+
+def choose_match_threshold(yours: list[float], others: list[float]) -> float:
+    """Where "you" starts on the voiceprint score: between other voices and your weakest takes, nearer the
+    others (missing you is worse than an occasional stranger, which the other checks still catch)."""
+    low_you = float(np.percentile(yours, 10)) if yours else 0.8
+    high_other = float(np.percentile(others, 98)) if others else 0.42
+    if low_you <= high_other:      # too alike to separate: lean on letting you in
+        return round(float(np.clip(low_you - 0.05, 0.35, 0.6)), 2)
+    t = high_other + (low_you - high_other) * 0.4
+    return round(float(np.clip(t, 0.42, 0.7)), 2)
+
+
+def save_voice_settings(threshold: float, gain: float, device: str, enabled: bool = True) -> None:
+    """The voiceprint threshold (and whether to use it) into config.yaml (voice_id section, added if missing)
+    and this mic's level into data/voice/mic_levels.json (each microphone keeps its own)."""
+    from .audio.mic import load_levels, save_levels
+
+    path = ROOT / "config.yaml"
+    s = path.read_text(encoding="utf-8")
+    if not re.search(r"(?m)^voice_id:", s):
+        s = s.rstrip("\n") + "\n\n" + VOICE_ID_SECTION.format(threshold=threshold) + "\n"
+    s = re.sub(r"(?m)^(  match_threshold:\s*)[\d.]+", rf"\g<1>{threshold:.2f}", s, count=1)
+    s = re.sub(r"(?ms)^(voice_id:.*?^  enabled:\s*)(?:true|false)", rf"\g<1>{'true' if enabled else 'false'}", s,
+               count=1)
+    path.write_text(s, encoding="utf-8")
+    levels = load_levels(VOICE / "mic_levels.json")
+    if device:
+        levels[device] = gain
+        save_levels(VOICE / "mic_levels.json", levels)
+
+
+VOICE_ID_SECTION = """voice_id:                    # recognise your voice (calibrate_wake.bat makes your voiceprint)
+  enabled: true
+  model: "data/models/speaker/campplus_en_voxceleb_16k.onnx"
+  profile: "data/voice/voiceprint.npz"
+  match_threshold: {threshold:.2f}       # voiceprint score that counts as you (you ~0.8-1.0, others well under 0.5)
+  lock_wake: true            # only your voice wakes Jarvis (not other people, TV or videos)
+  lock_listening: true       # other voices don't start or stretch your sentence: Jarvis waits for you
+  lock_barge_in: true        # only your voice cuts in while Jarvis is speaking
+  listen_margin: 0.08        # a little more lenient mid-sentence than for the wake word"""
 
 
 # ------------------------------------------------------------------ choosing the settings
@@ -157,10 +265,13 @@ def run(cfg: dict, quick: bool = False) -> int:
     from .brain.intents import wake_phrase
 
     print("\n  JARVIS - voice calibration" + (" (quick)" if quick else "") + "\n  " + "=" * 52)
+    device = str(sd.query_devices(kind="input")["name"])
+    print(f"  Microphone: {device}")
+    print("  (Use the mic you normally use with Jarvis. Each microphone gets its own settings.)")
     if quick:
-        print("  About 2 minutes. Sit where you usually do and speak as you normally would to Jarvis.")
+        print("  About 3 minutes. Sit where you usually do and speak as you normally would to Jarvis.")
     else:
-        print("  About 6-8 minutes. Sit where you usually do, about as far from the laptop as usual.")
+        print("  About 8-10 minutes. Sit where you usually do, about as far from the laptop as usual.")
         print("  Part 1 is in a quiet room, part 2 with background noise. Each step says what to do.")
     model = Model(wakeword_models=[cfg["wake_word"]["model"]], inference_framework="onnx")
     name = next(iter(model.models))
@@ -168,14 +279,15 @@ def run(cfg: dict, quick: bool = False) -> int:
     stt = STT(cfg["stt"]["model"], cfg["stt"]["compute_type"], cfg["stt"]["threads"])
     stt.set_vocabulary(["Spotify", "YouTube", "Chrome", "Excel"])
     sess = Session(model, name)
+    sess.device = device
 
-    if quick:  # one pass: quiet, your voice at three levels, ordinary speech, one command
+    if quick:  # one pass: quiet, your voiceprint, your voice at three levels, other voices, one command
         sess.listen("silence", 5, "Step 1 - stay quiet.")
+        sess.sentences(5)
         sess.wake_takes("quiet-normal", "in your normal voice", 3)
         sess.wake_takes("quiet-low", "quietly", 2)
         sess.wake_takes("quiet-loud", "loudly", 2)
-        sess.listen("speech", 8, "Say any sentence aloud (no \"Jarvis\"), e.g. \"Please open my email and check "
-                                 "the latest messages.\"")
+        sess.others(12)
         sess.command("Say in one breath: \"Hey Jarvis, what time is it?\"")
         print("\n  Working it out (under a minute)…")
         return _finish(cfg, model, name, stt, sess, vp, wake_phrase)
@@ -183,6 +295,7 @@ def run(cfg: dict, quick: bool = False) -> int:
     print("\n  PART 1 of 2 - QUIET ROOM\n  " + "-" * 52)
     print("  Turn off music and videos. Close the door if it's noisy outside.")
     sess.listen("silence", 8, "Step 1 - stay completely quiet.")
+    sess.sentences(8)
     sess.wake_takes("quiet-normal", "in your normal voice", 4)
     sess.wake_takes("quiet-low", "quietly, almost a whisper, as if someone is asleep nearby", 4)
     sess.wake_takes("quiet-loud", "loudly, as if calling from across the room", 3)
@@ -199,8 +312,54 @@ def run(cfg: dict, quick: bool = False) -> int:
     sess.wake_takes("noise-low", "quietly", 3)
     sess.listen("speech-noise", 10, f"Read this aloud over the noise (no \"Jarvis\"):\n    \"{READ_NOISE}\"")
     sess.command("Say in one breath: \"Hey Jarvis, open Chrome.\"")
-    print("\n  You can stop the noise now. Working it out (this takes a minute or two)…")
+    print("\n  You can stop the noise now.")
+    sess.others(15)
+    print("\n  Working it out (this takes a minute or two)…")
     return _finish(cfg, model, name, stt, sess, vp, wake_phrase)
+
+
+def _voiceprint(sess: Session, gain: float) -> dict | None:
+    """Build your voiceprint from the sentences and "Hey Jarvis" takes, and measure how well it tells you from
+    other voices: each of your clips is scored against a voiceprint made without it (an honest test)."""
+    from .audio.speaker import SpeakerID
+
+    model = ROOT / SPEAKER_MODEL
+    if not model.is_file():
+        print("  ! The voice-recognition model is missing (data/models/speaker); skipping the voiceprint.")
+        return None
+    sid = SpeakerID(model)
+    # the voiceprint comes from whole sentences: a two-word "Hey Jarvis" is too little voice for a stable one
+    # (built from those, it matched plain room noise at 0.8, 15 Nov)
+    lines = [voiced_part(np.clip(a * gain, -1, 1)) for a in getattr(sess, "lines", [])]
+    lines = [v for v in lines if v.size >= SR]
+    if len(lines) < 3:
+        print("  ! Too little of your voice was recorded for a voiceprint; skipping it.")
+        return None
+    embs = [sid.embed(v) for v in lines]
+    held_out = []  # each sentence against a voiceprint made from the others
+    for i in range(len(embs)):
+        sid.set_profile(embs[:i] + embs[i + 1:])
+        held_out.append(sid.score(lines[i]))
+    sid.set_profile(embs)
+    # and your short "Hey Jarvis", the hardest case at run time, against the full voiceprint
+    takes = [voiced_part(np.clip(a * gain, -1, 1)) for _, a in sess.takes]
+    held_out += [sid.score(v) for v in takes if v.size >= SR // 2]
+    # other voices (and the room) in 1.5 s pieces, as Jarvis hears them while listening
+    others, room = [], []
+    pieces = lambda a: [a[i:i + int(1.5 * SR)] for i in range(0, max(1, len(a) - SR), int(0.75 * SR))]  # noqa: E731
+    ov = getattr(sess, "other_voices", None)
+    if ov is not None:
+        others = [sid.score(p) for p in pieces(voiced_part(np.clip(ov * gain, -1, 1))) if p.size >= SR]
+    for c, a in sess.background:
+        if c in ("silence", "noise"):
+            room += [sid.score(p) for p in pieces(np.clip(a * gain, -1, 1)) if p.size >= SR]
+    threshold = choose_match_threshold(held_out, others + room)
+    sid.threshold = threshold
+    sid.save(ROOT / VOICEPRINT, held_out=np.array(held_out), others=np.array(others or [0.0]))
+    # only lock other voices out if it recognises you nearly every time: missing you is the worse mistake
+    reliable = sum(s >= threshold for s in held_out) >= 0.8 * len(held_out) and float(np.median(held_out)) >= 0.5
+    return {"yours": held_out, "others": others, "room": room, "threshold": threshold, "sid": sid,
+            "reliable": reliable}
 
 
 def _finish(cfg: dict, model, name: str, stt, sess: Session, vp, wake_phrase) -> int:
@@ -211,6 +370,9 @@ def _finish(cfg: dict, model, name: str, stt, sess: Session, vp, wake_phrase) ->
     loud_peaks = peaks.get("quiet-loud", []) + peaks.get("noise-loud", [])
     low_peaks = peaks.get("quiet-low", []) + peaks.get("noise-low", [])
     gain = choose_gain(peaks.get("quiet-normal", normal_peaks), loud_peaks)
+    lines = [voiced_part(a) for a in getattr(sess, "lines", [])]
+    if lines:  # ordinary sentences say more about your speaking level than a two-word wake phrase
+        gain = choose_speech_gain(lines, loud_peaks)
 
     # ---- what the stock model gives you, and the background
     take_scores = [vp.best_score(model, name, a, gain) for _, a in sess.takes]
@@ -247,16 +409,44 @@ def _finish(cfg: dict, model, name: str, stt, sess: Session, vp, wake_phrase) ->
     texts = [stt.quick(np.clip(a * gain, -1, 1)) for _, a in sess.takes]
     heard_cmds = [stt.transcribe(np.clip(a * gain, -1, 1)) for a in sess.commands]
 
+    # ---- your voiceprint: recognise you, ignore other voices
+    print("  Building your voiceprint…")
+    vprint = _voiceprint(sess, gain)
+
     # ---- keep the recordings for next time (local only)
     for i, (c, a) in enumerate(sess.takes):
         _save_wav(VOICE / "takes" / f"{c}-{i:02d}.wav", a)
     for i, (c, a) in enumerate(sess.background):
         _save_wav(VOICE / "background" / f"{c}-{i:02d}.wav", a)
+    for i, a in enumerate(getattr(sess, "lines", [])):
+        _save_wav(VOICE / "lines" / f"line-{i:02d}.wav", a)
+    if getattr(sess, "other_voices", None) is not None:
+        _save_wav(VOICE / "background" / "other-voices.wav", sess.other_voices)
 
     # ---- results, per setting
     print("\n  RESULTS\n  " + "=" * 52)
+    print(f"  microphone           {getattr(sess, 'device', '') or 'default'}")
     print(f"  mic boost            {gain:.1f}x   (your normal voice {statistics.median(normal_peaks):.2f}, "
-          f"low {statistics.median(low_peaks):.2f}, loud {max(loud_peaks):.2f})")
+          f"low {statistics.median(low_peaks):.2f}, loud {max(loud_peaks):.2f}); Jarvis fine-tunes it as you talk")
+    if vprint:
+        ys, os_ = vprint["yours"], vprint["others"]
+        recognised = sum(s >= vprint["threshold"] for s in ys)
+        print(f"  your voiceprint      {'ON ' if vprint['reliable'] else 'OFF'} - you score {np.median(ys):.2f} "
+              f"(lowest {min(ys):.2f}); "
+              f"recognised in {recognised}/{len(ys)} of your clips")
+        if os_:
+            ignored = sum(s < vprint["threshold"] for s in os_)
+            print(f"  other voices         score up to {max(os_):.2f}; ignored {ignored}/{len(os_)} moments "
+                  f"(threshold {vprint['threshold']:.2f})")
+        else:
+            print(f"  other voices         not recorded (skipped); using a safe threshold of {vprint['threshold']:.2f}")
+        if not vprint["reliable"]:
+            print("  ! Your voiceprint isn't reliable enough yet, so Jarvis won't use it to lock out other voices")
+            print("    (it would risk ignoring you). Run this again closer to the mic, in a quieter spot, and read")
+            print("    the sentences in your normal voice.")
+        elif min(ys) < vprint["threshold"]:
+            print("  ! A few of your clips scored low (usually a whisper or a very short phrase). Speak at your")
+            print("    normal level to Jarvis; if it misses you often, run this again.")
     print(f"  background           silence/noise/talk score up to {max(bg_scores):.2f} on the standard model")
     if use_verifier:
         print(f"  your voice model     ON  - held-out takes {np.median(pos_p):.2f} vs background up to "
@@ -269,7 +459,11 @@ def _finish(cfg: dict, model, name: str, stt, sess: Session, vp, wake_phrase) ->
     wakes = []
     for (c, a), clip, sc, text in zip(sess.takes, pos_clips, take_scores, texts):
         by_model = (clip.probability(verifier, trigger) if verifier is not None else sc) >= threshold
-        wakes.append((c, by_model or wake_phrase(text or "") is not None))
+        heard = by_model or wake_phrase(text or "") is not None
+        if heard and vprint:  # and the voiceprint has to recognise you, as it will at run time
+            v = voiced_part(np.clip(a * gain, -1, 1))
+            heard = v.size < SR // 2 or vprint["sid"].score(v) >= vprint["threshold"]
+        wakes.append((c, heard))
     for c in conds:
         got = [w for cc, w in wakes if cc == c]
         if got:
@@ -289,6 +483,8 @@ def _finish(cfg: dict, model, name: str, stt, sess: Session, vp, wake_phrase) ->
     save_config({"gain": gain, "threshold": threshold, "near_peak": near_peak, "verify_below": verify_below,
                  "accept_unheard_above": accept_unheard, "verifier": VERIFIER if use_verifier else "",
                  "verifier_trigger": trigger})
+    save_voice_settings(vprint["threshold"] if vprint else 0.55, gain, getattr(sess, "device", ""),
+                        enabled=bool(vprint and vprint["reliable"]))
     print("\n  Saved to config.yaml (recordings kept in data\\voice on this laptop only).")
     print("  Jarvis restarts with the new settings when you close this.\n")
     time.sleep(0.5)

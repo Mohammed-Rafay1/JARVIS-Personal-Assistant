@@ -1,6 +1,6 @@
 @echo off
-rem Tune "Hey Jarvis" and the mic to your voice (6-8 minutes: a quiet room, then with background noise;
-rem low, normal and loud voice). "calibrate_wake.bat quick" is the 2-minute version (quiet room only).
+rem Tune Jarvis to your voice (8-10 minutes: your voiceprint, a quiet room, then background noise, then other
+rem people talking). "calibrate_wake.bat quick" is the 3-minute version (quiet room, voiceprint, other voices).
 rem Jarvis is paused meanwhile and restarts with the new settings.
 cd /d "%~dp0backend"
 echo Pausing Jarvis during calibration...

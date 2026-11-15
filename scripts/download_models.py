@@ -11,6 +11,8 @@ sys.path.insert(0, str(ROOT / "backend"))
 from jarvis.config import MODELS, load_config  # noqa: E402
 
 KOKORO = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+SPEAKER = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
+           "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx")
 
 
 def fetch(url: str, dest: Path) -> None:
@@ -53,6 +55,8 @@ def main() -> None:
     print("Voice (Kokoro, natural):")
     fetch(KOKORO + "kokoro-v1.0.int8.onnx", MODELS / "kokoro" / "kokoro-v1.0.int8.onnx")
     fetch(KOKORO + "voices-v1.0.bin", MODELS / "kokoro" / "voices-v1.0.bin")
+    print("Voice recognition (CAM++ voiceprint, so Jarvis listens to you and not to others):")
+    fetch(SPEAKER, MODELS / "speaker" / "campplus_en_voxceleb_16k.onnx")
     print("Done.")
 
 
