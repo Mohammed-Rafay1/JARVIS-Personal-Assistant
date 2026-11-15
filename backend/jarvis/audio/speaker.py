@@ -86,18 +86,20 @@ class SpeakerID:
 
 
 class Tracker:
-    """Keeps an eye on who is talking right now, without slowing the audio thread: speech frames go into a
-    rolling 1.5 s window and a background thread scores it every ~0.4 s. me() answers from the latest score:
-    True (you), False (someone else), or None (not enough speech heard yet to tell)."""
+    """Keeps an eye on who is talking right now, without slowing the audio thread: the last ~1.5 s of audio (as
+    it is, pauses included: the model needs natural, continuous speech; stitching only the voiced bits together
+    wrecked its scores, 15 Nov) is scored by a background thread every ~0.3 s of speech. me() answers from the
+    latest score: True (you), False (someone else), or None (not enough speech heard yet to tell)."""
 
-    WINDOW = 15        # frames (80 ms each): ~1.2 s, long enough to be sure, short enough to notice a new voice
-    MIN = 9            # at least ~0.7 s of speech before deciding
+    WINDOW = 19        # frames (80 ms each): ~1.5 s of continuous audio
+    MIN = 8            # at least ~0.65 s of speech in it before deciding
     EVERY = 4          # score again after this many new speech frames (~0.3 s)
     STALE = 1.2        # seconds a verdict stays valid after the speech it came from
 
     def __init__(self, sid: SpeakerID, margin: float = 0.0) -> None:
         self.sid, self.margin = sid, margin
         self._frames: deque[np.ndarray] = deque(maxlen=self.WINDOW)
+        self._speech: deque[bool] = deque(maxlen=self.WINDOW)
         self._since = 0
         self._q: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
         self.last_score = 0.0
@@ -107,15 +109,17 @@ class Tracker:
 
     def reset(self) -> None:
         self._frames.clear()
+        self._speech.clear()
         self._since = 0
         self._verdict, self._at = None, 0.0
 
     def feed(self, frame: np.ndarray, speech: bool) -> None:
+        self._frames.append(frame)
+        self._speech.append(bool(speech))
         if not speech:
             return
-        self._frames.append(frame)
         self._since += 1
-        if len(self._frames) >= self.MIN and self._since >= self.EVERY:
+        if sum(self._speech) >= self.MIN and self._since >= self.EVERY:
             self._since = 0
             clip = np.concatenate(list(self._frames)).astype(np.float32) / 32768.0
             try:

@@ -366,18 +366,22 @@ class Jarvis:
         return self.speaker is not None and self.speaker.ready and \
             bool((self.cfg.get("voice_id", {}) or {}).get(f"lock_{what}", True))
 
-    def _voiced(self, frames: list[np.ndarray], most: int = 20) -> np.ndarray:
-        """The frames that carry a voice (not the silence around it), newest last, as float audio."""
+    def _recent(self, frames: list[np.ndarray], most: int = 25) -> tuple[np.ndarray, int]:
+        """The last ~2 s as it was heard (continuous: the voiceprint model needs natural speech, pauses and
+        all), and how many of those frames carry a voice."""
+        recent = frames[-most:]
+        if not recent:
+            return np.zeros(0, np.float32), 0
         floor = max(400.0, self.endpointer.noise_floor * 2)
-        keep = [f for f in frames[-most:] if float(np.sqrt(np.mean(f.astype(np.float32) ** 2))) > floor]
-        return (np.concatenate(keep).astype(np.float32) / 32768.0) if keep else np.zeros(0, np.float32)
+        voiced = sum(float(np.sqrt(np.mean(f.astype(np.float32) ** 2))) > floor for f in recent)
+        return np.concatenate(recent).astype(np.float32) / 32768.0, voiced
 
     def _is_you(self, frames: list[np.ndarray], what: str, margin: float = 0.0) -> bool:
         """For a wake word or a barge-in: does that voice match yours? True when the voiceprint isn't in use."""
         if not self._voice_lock(what):
             return True
-        audio = self._voiced(frames)
-        if audio.size < 8000:  # under half a second of voice: too little to judge, don't block
+        audio, voiced = self._recent(frames)
+        if voiced < 6:  # under half a second of voice: too little to judge, don't block
             return True
         ok, score = self.speaker.is_me(audio, margin)
         if not ok:
@@ -504,8 +508,9 @@ class Jarvis:
                 # Jarvis is working out what you said. If you start talking again (it misheard, or you
                 # changed your mind), drop that attempt and listen afresh.
                 self._preroll.append(frame)
+                self._wake_ring.append(frame)
                 if self.in_call and self.state == "thinking" and self.cfg["call"].get("barge_in", True) \
-                        and self._rethink_feed(frame) and self._is_you(list(self._preroll), "barge_in", 0.1):
+                        and self._rethink_feed(frame) and self._is_you(list(self._wake_ring), "barge_in", 0.1):
                     pre = list(self._preroll)[-6:]
                     if self._recognising:
                         # still working out the words: you paused mid-sentence and carried on. Keep what
@@ -528,7 +533,7 @@ class Jarvis:
                     self._echo_learn(float(np.sqrt(np.mean(frame.astype(np.float32) ** 2))))
                 if speaking and self.in_call and self.cfg["call"].get("barge_in", True):
                     # you started talking over Jarvis (and it's your voice, not someone near you, or its own)
-                    if self._barge_feed(frame) and self._is_you(list(self._preroll), "barge_in", 0.12):
+                    if self._barge_feed(frame) and self._is_you(list(self._wake_ring), "barge_in", 0.12):
                         pre = list(self._preroll)[-5:]
                         self.wake_vad.reset()
                         self.loop.call_soon_threadsafe(lambda p=pre: self._wake("barge-in", p))

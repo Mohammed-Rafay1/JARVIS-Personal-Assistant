@@ -79,7 +79,7 @@ STOP = re.compile(r"^(?:stop|stop talking|cancel|never ?mind|nothing|shut up|qui
 _NAME = r"(?:jarvis|jarviss|jarvi|jarvas|jervis|jervais|javis|jarwis|derivis|derivi|devis|dear ?wiz|dear ?viss)"
 WAKE_TEXT = re.compile(
     r"^\W*(?:(?:(?:hey|hi|hay|hey there|okay|ok|hello|yo|a|edge|hate|age|eh|aye)[\s,]+(?:" + _NAME[3:-1] +
-    r"|travis|davis|service|jerry|jarvey|jarvie|jarby|harvis|charvis))"
+    r"|travis|davis|service|jerry|jarvey|jarvie|jarby|harvis|charvis|dervis|dervish|darvis|garvis|jarviz))"
     r"|(?:[a-z']{1,8}[\s,]+)?" + _NAME + r")\b[\s,.!?]*(?P<rest>.*)$", re.I)
 
 

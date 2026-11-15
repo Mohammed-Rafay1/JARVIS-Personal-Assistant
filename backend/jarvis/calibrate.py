@@ -328,10 +328,10 @@ def _voiceprint(sess: Session, gain: float) -> dict | None:
         print("  ! The voice-recognition model is missing (data/models/speaker); skipping the voiceprint.")
         return None
     sid = SpeakerID(model)
-    # the voiceprint comes from whole sentences: a two-word "Hey Jarvis" is too little voice for a stable one
-    # (built from those, it matched plain room noise at 0.8, 15 Nov)
-    lines = [voiced_part(np.clip(a * gain, -1, 1)) for a in getattr(sess, "lines", [])]
-    lines = [v for v in lines if v.size >= SR]
+    # The voiceprint comes from whole sentences, as recorded: a two-word "Hey Jarvis" is too little voice for a
+    # stable one, and cutting out the pauses and gluing the voiced bits together wrecked the model's scores
+    # (you 0.31 instead of 0.93, 15 Nov). Recordings with under a second of voice are left out.
+    lines = [np.clip(a * gain, -1, 1) for a in getattr(sess, "lines", []) if voiced_part(a).size >= SR]
     if len(lines) < 3:
         print("  ! Too little of your voice was recorded for a voiceprint; skipping it.")
         return None
@@ -342,14 +342,13 @@ def _voiceprint(sess: Session, gain: float) -> dict | None:
         held_out.append(sid.score(lines[i]))
     sid.set_profile(embs)
     # and your short "Hey Jarvis", the hardest case at run time, against the full voiceprint
-    takes = [voiced_part(np.clip(a * gain, -1, 1)) for _, a in sess.takes]
-    held_out += [sid.score(v) for v in takes if v.size >= SR // 2]
+    held_out += [sid.score(np.clip(a * gain, -1, 1)) for _, a in sess.takes if voiced_part(a).size >= SR // 2]
     # other voices (and the room) in 1.5 s pieces, as Jarvis hears them while listening
     others, room = [], []
     pieces = lambda a: [a[i:i + int(1.5 * SR)] for i in range(0, max(1, len(a) - SR), int(0.75 * SR))]  # noqa: E731
     ov = getattr(sess, "other_voices", None)
     if ov is not None:
-        others = [sid.score(p) for p in pieces(voiced_part(np.clip(ov * gain, -1, 1))) if p.size >= SR]
+        others = [sid.score(p) for p in pieces(np.clip(ov * gain, -1, 1)) if p.size >= SR]
     for c, a in sess.background:
         if c in ("silence", "noise"):
             room += [sid.score(p) for p in pieces(np.clip(a * gain, -1, 1)) if p.size >= SR]
@@ -460,9 +459,9 @@ def _finish(cfg: dict, model, name: str, stt, sess: Session, vp, wake_phrase) ->
     for (c, a), clip, sc, text in zip(sess.takes, pos_clips, take_scores, texts):
         by_model = (clip.probability(verifier, trigger) if verifier is not None else sc) >= threshold
         heard = by_model or wake_phrase(text or "") is not None
-        if heard and vprint:  # and the voiceprint has to recognise you, as it will at run time
-            v = voiced_part(np.clip(a * gain, -1, 1))
-            heard = v.size < SR // 2 or vprint["sid"].score(v) >= vprint["threshold"]
+        if heard and vprint and vprint["reliable"]:  # and the voiceprint has to recognise you, as at run time
+            heard = voiced_part(a).size < SR // 2 or \
+                vprint["sid"].score(np.clip(a * gain, -1, 1)) >= vprint["threshold"]
         wakes.append((c, heard))
     for c in conds:
         got = [w for cc, w in wakes if cc == c]
