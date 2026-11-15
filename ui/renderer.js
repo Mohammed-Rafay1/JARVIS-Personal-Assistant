@@ -43,7 +43,8 @@ let curJarvis = null;   // the Jarvis bubble currently being written
 // ---------------------------------------------------------------- connection
 function connect() {
   ws = new WebSocket(`ws://127.0.0.1:${host.port}/?token=${encodeURIComponent(host.token)}`);
-  ws.onopen = () => { connected = true; lostAt = 0; };
+  // hello: if a call is on (this page was just reloaded after a crash), the backend puts it back into the call
+  ws.onopen = () => { connected = true; lostAt = 0; send({ type: 'hello', in_call: inCall }); };
   ws.onmessage = (e) => handle(JSON.parse(e.data));
   ws.onclose = () => {
     if (connected) { setState('offline'); lostAt = Date.now(); }

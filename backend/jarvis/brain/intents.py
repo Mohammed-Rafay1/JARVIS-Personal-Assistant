@@ -31,7 +31,7 @@ _POLITE_POST = re.compile(r"[\s,]*\b(?:please|for me|now|thanks|thank you|jarvis
 
 
 def normalize(text: str) -> str:
-    t = text.lower().replace("â€™", "'").replace("â€˜", "'")
+    t = text.lower().replace("’", "'").replace("‘", "'")
     t = re.sub(r"(?<=\d),(?=\d{3})", "", t)            # 4,500 -> 4500
     t = re.sub(r"[^\w\s@.'%\-:]", " ", t)
     t = re.sub(r"(?<!\w)\.|\.(?!\w)", " ", t)          # drop sentence dots, keep dots inside domains/emails

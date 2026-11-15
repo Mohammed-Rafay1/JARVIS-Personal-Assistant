@@ -198,7 +198,7 @@ _ITEM_LEAD = re.compile(
     r"i'll|i'm going to|i am going to|i gotta|i've got to|i have got to|need to|have to|got to|gotta|want to|"
     r"we need to|we have to|you (?:need|have|should|can|could) |you'll|please |jarvis[, ]+|can you |could you )?\s*",
     re.I)
-_SPLIT = re.compile(r"\s*(?:[;\nâ€¢Â·]|(?<!\d),(?!\d)|\.\s+|\s+(?:and then|and also|after that|then|also|plus)\s+|"
+_SPLIT = re.compile(r"\s*(?:[;\n•·]|(?<!\d),(?!\d)|\.\s+|\s+(?:and then|and also|after that|then|also|plus)\s+|"
                     r"\s+and\s+(?=(?:i |i'll |then |also |you |please |jarvis |ask |call |email |e-mail |mail |"
                     r"send |write |research |search |look |find |check |finish |complete |go |meet |buy |book |"
                     r"pay |prepare |review |read |reply |message |whatsapp |text |submit |fix |update |clean |"
@@ -259,7 +259,7 @@ _FILLER = {"i", "ive", "i've", "have", "has", "had", "just", "already", "finally
 
 def _words(text: str) -> list[str]:
     out = []
-    for w in re.findall(r"[a-z0-9']+", text.lower().replace("â€™", "'")):
+    for w in re.findall(r"[a-z0-9']+", text.lower().replace("’", "'")):
         w = _IRREGULAR.get(w, w)
         if w in _FILLER:
             continue

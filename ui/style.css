@@ -18,10 +18,6 @@
   --hud: calc(var(--orb) * 1.55);
 }
 
-/* the state colour fades from one to the next instead of jumping */
-@property --accent { syntax: '<color>'; inherits: true; initial-value: #00B7FF; }
-:root { transition: --accent 600ms ease; }
-
 * { box-sizing: border-box; }
 html, body {
   margin: 0; width: 100%; height: 100%; overflow: hidden;

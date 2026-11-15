@@ -2543,6 +2543,11 @@ class Jarvis:
         elif kind == "choose" and self.pending:
             self._interrupt()
             self.task = asyncio.create_task(self._choose(int(msg.get("index", 0)) + 1))
+        elif kind == "hello":  # the overlay (re)connected; after a crash it lost the call it was showing
+            if self.in_call and not msg.get("in_call"):
+                log.info("overlay reconnected mid-call: putting it back into the call")
+                self.ui.send({"type": "call", "value": "start", "source": "restore"})
+                self.ui.send({"type": "state", "value": self.state})
         elif kind == "board_action" and self.board is not None:
             if msg.get("action") in ("run", "email", "project", "focus", "focus_stop", "open"):
                 self._interrupt()  # a click that makes Jarvis talk replaces whatever it was saying

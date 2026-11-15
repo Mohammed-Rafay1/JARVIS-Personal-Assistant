@@ -1,7 +1,11 @@
 // JARVIS overlay: a transparent, always-on-top window carrying the orb. The orb starts in the
 // bottom-right corner and can be dragged anywhere; the spot is remembered in data/overlay.json.
 // Launched by the Python backend with --jarvis-port, --jarvis-token and --jarvis-hotkey.
-const { app, BrowserWindow, globalShortcut, ipcMain, Menu, Tray, nativeImage, screen, shell } = require('electron');
+const { app, BrowserWindow, crashReporter, globalShortcut, ipcMain, Menu, Tray, nativeImage, screen, shell } = require('electron');
+
+// if the page under the orb ever crashes (it did twice mid-call, 14-15 Nov), keep a report on this laptop
+// (app data\jarvis-overlay\Crashpad) so the cause can be found; nothing is uploaded
+crashReporter.start({ uploadToServer: false });
 const fs = require('fs');
 const path = require('path');
 const pos = require('./position');
@@ -123,10 +127,18 @@ function createWindow() {
   win.webContents.on('console-message', (_e, level, message, line, source) => {
     if (level >= 2) log('page:', message, `(${path.basename(source || '')}:${line})`);   // warnings and errors
   });
-  // if the page ever dies (14 Nov 23:30 it did, mid-call), bring the orb straight back instead of leaving a hole
+  // if the page ever dies, bring the orb straight back. The reloaded page starts as the small orb, so the window
+  // has to become the small, click-through corner window again too: on 15 Nov 17:59 it stayed full-screen and
+  // invisible, with the orb in the middle of the screen and every click swallowed, until Jarvis was quit.
+  // (If a call was on, the backend puts the page back into it once it reconnects.)
   win.webContents.on('render-process-gone', (_e, d) => {
-    log('page crashed:', d.reason, '- reloading');
-    if (d.reason !== 'clean-exit') setTimeout(() => { if (win && !win.isDestroyed()) win.webContents.reload(); }, 800);
+    log('page crashed:', d.reason, `(exit ${d.exitCode})`, '- reloading; crash reports in', app.getPath('crashDumps'));
+    if (d.reason === 'clean-exit') return;
+    endDrag(false);
+    mode = 'dock';
+    place();
+    win.setIgnoreMouseEvents(true, { forward: true });
+    setTimeout(() => { if (win && !win.isDestroyed()) win.webContents.reload(); }, 800);
   });
   win.loadFile(path.join(__dirname, 'index.html'));
   win.once('ready-to-show', () => win.showInactive());

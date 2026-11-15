@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 def _short(text: str, n: int = 260) -> str:
     text = re.sub(r"\s+", " ", text or "").strip()
-    return text if len(text) <= n else text[:n].rsplit(" ", 1)[0] + "â€¦"
+    return text if len(text) <= n else text[:n].rsplit(" ", 1)[0] + "…"
 
 
 def _first_sentences(text: str, n: int = 2, limit: int = 260) -> str:
@@ -395,7 +395,7 @@ class Board:
         locked = await asyncio.to_thread(screen_locked)
         remote = self.j.remote
         if remote is not None and remote.linked and (not asked or locked):
-            remote.notify(f"â˜€ï¸ *{brief}*\n\n{question.replace('Tell me', 'Reply here')}")
+            remote.notify(f"☀️ *{brief}*\n\n{question.replace('Tell me', 'Reply here')}")
         self.j.pending = {"kind": "plan_today"}
         if locked:
             self._show_when_back = True
@@ -516,7 +516,7 @@ class Board:
         away = self.store.day().get("source") == "whatsapp" or await asyncio.to_thread(screen_locked)
         if away and remote is not None and remote.linked:
             body = card_text(r.card) if r.card else r.say
-            remote.notify(f"{'âœ…' if r.ok else 'âš ï¸'} *{it['text']}*\n\n{body}")
+            remote.notify(f"{'✅' if r.ok else '⚠️'} *{it['text']}*\n\n{body}")
             return
         self.j.ui.send({"type": "notify", "kind": "board", "from": "Done" if r.ok else "Couldn't finish",
                         "subject": it["text"]})
@@ -589,11 +589,11 @@ class Board:
         items = self.store.items
         if not items:
             return "Nothing on today's list yet."
-        mark = {"done": "âœ…", "working": "â³", "queued": "â³", "failed": "âš ï¸"}
+        mark = {"done": "✅", "working": "⏳", "queued": "⏳", "failed": "⚠️"}
         lines = []
         for n, i in enumerate(items, 1):
             who = " _(Jarvis)_" if i["owner"] == "jarvis" else ""
-            lines.append(f"{mark.get(i['status'], 'â–«ï¸')} {n}. {i['text']}{who}")
+            lines.append(f"{mark.get(i['status'], '▫️')} {n}. {i['text']}{who}")
         done = sum(i["status"] == "done" for i in items)
         return f"*Today: {done}/{len(items)} done*\n" + "\n".join(lines)
 
@@ -776,7 +776,7 @@ class Board:
         remote = self.j.remote
         locked = await asyncio.to_thread(screen_locked)
         if remote is not None and remote.linked and (locked or self.cfg.get("remind_on_whatsapp", True)):
-            remote.notify(f"â° *Reminder:* {r['text']}")
+            remote.notify(f"⏰ *Reminder:* {r['text']}")
         if not locked:
             await self.j.board_announce(f"{self.sir.capitalize()}, a reminder: {r['text']}.", urgent=True)
 
@@ -791,7 +791,7 @@ class Board:
             line += f" Everything's done. Excellent day, {self.sir}."
         remote = self.j.remote
         if remote is not None and remote.linked and self.store.day().get("source") == "whatsapp":
-            remote.notify(f"ðŸŒ™ {line}\n\n{self.text_list()}")
+            remote.notify(f"🌙 {line}\n\n{self.text_list()}")
         await self.j.board_announce(line)
 
 
