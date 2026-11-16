@@ -290,8 +290,11 @@ class WhatsAppRemote:
         stt = self.jarvis.stt
         try:
             audio = await asyncio.to_thread(decode_voice_note, path)
-            # the same recogniser as the microphone; one decode at a time, so a live call isn't slowed down twice
-            # accuracy matters more than speed here: re-check notes up to 30 s with the accurate model
+            # the same recogniser as the microphone (one decode at a time), but careful: nobody is waiting on a
+            # live reply, so the accurate model with a wider beam and the command words (16 Nov: the fast model
+            # heard "Claude Gaut" and "gave me a bit when I was away")
+            if hasattr(stt, "transcribe_careful"):
+                return await asyncio.to_thread(stt.transcribe_careful, audio[: 16000 * 60])
             text = await asyncio.to_thread(stt.transcribe, audio[: 16000 * 60], None, None, 30.0)
             return text, stt.last_conf
         finally:

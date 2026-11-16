@@ -99,6 +99,41 @@ class STT:
         conf = min((s.avg_logprob for s in speech), default=-9.0)
         return segments, conf
 
+    # what you say to Jarvis, so a phone recording of it is heard as these words ("Claude Gaut", "Get Wisped,
+    # can you give me a moderning update", "gave me a bit when I was away" on 16 Nov)
+    COMMAND_WORDS = ("Jarvis, give me the morning update. Claude Code projects, my emails, my to-do list, the board, "
+                     "what did I miss while I was away, does anything need me, mark them done, remind me at 3 PM, "
+                     "send an email, WhatsApp, Spotify, ChatGPT.")
+
+    def transcribe_careful(self, audio: np.ndarray) -> tuple[str, float]:
+        """A recording that isn't waiting on a live reply (a WhatsApp voice note): the accurate model, a wider
+        beam and the command vocabulary. A few seconds slower, much closer to what was said."""
+        with self._busy:
+            self.last_conf = 0.0
+            if audio.size < 16000 * 0.3:
+                return "", -9.0
+            peak = float(np.max(np.abs(audio)))
+            if peak < 0.005:
+                return "", -9.0
+            audio = _trim(audio / max(peak, 1e-3) * 0.9)
+            model, used = (self.accurate, "accurate") if self.accurate is not None else (self.model, self.name)
+            prompt = self.COMMAND_WORDS + (" " + self.prompt if self.prompt else "")
+            t = time.perf_counter()
+            segments = list(model.transcribe(
+                audio, language="en", beam_size=5, best_of=5, temperature=0.0,
+                condition_on_previous_text=False, without_timestamps=True, vad_filter=True,
+                initial_prompt=prompt[:800], hotwords="Jarvis Claude Code",
+            )[0])
+            kept = [s for s in segments if s.no_speech_prob < 0.6 and s.avg_logprob > -1.2
+                    and s.compression_ratio < 2.4]
+            text = " ".join(s.text for s in kept).strip()
+            conf = min((s.avg_logprob for s in kept), default=-9.0)
+            self.last_conf = conf
+            log.info("STT careful %.2fs (%s): %r", time.perf_counter() - t, used, text)
+            if re.sub(r"[^a-z ]", "", text.lower()).strip() in _HALLUCINATIONS:
+                return "", -9.0
+            return text, conf
+
     def set_vocabulary(self, words: list[str]) -> None:
         # names Whisper would otherwise misspell; keep the prompt short, it costs decode time
         self.prompt = "Jarvis, " + ", ".join(words[:60]) + "."

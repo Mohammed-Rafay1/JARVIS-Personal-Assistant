@@ -537,3 +537,30 @@ def test_away_and_needs_in_one_request(jarvis):
     b.store.add("Call the bank")
     asyncio.run(j.handle_text("give me an update of when i was away and also tell me if anything needs me", typed=True))
     assert "Since" in said[-1] and "needs you" in said[-1] and said[-1].lower().count("call the bank") == 1
+
+
+@pytest.mark.parametrize("said,tool", [
+    ("I'm going on vacations can u handle everything?", "needs_me"),
+    ("There's some going on applications, can you handle everything, my emails and my cloud code projects?",
+     "needs_me"),
+    ("Jarvis i wasn't there so give me update about my emails and claude code projects and my todo tasks",
+     "away_update"),
+    ("give me an update on my emails", "briefing"),
+    ("tell me the status of polani mono", "claude_project_status"),
+])
+def test_phrases_from_16_nov_whatsapp(said, tool):
+    from jarvis.brain.intents import normalize
+
+    i = parse(normalize(said))
+    assert i is not None and i.tool == tool
+
+
+@pytest.mark.parametrize("said,tool", [
+    ("Jarvis gave me an update about everything.", "briefing"),
+    ("Jarvis gave me a bit when I was away and also tells me if anything needs me.", "away_update"),
+])
+def test_give_me_heard_as_gave_me(said, tool):
+    from jarvis.brain.intents import normalize
+
+    i = parse(normalize(said))
+    assert i is not None and i.tool == tool

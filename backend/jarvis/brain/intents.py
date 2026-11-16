@@ -51,6 +51,9 @@ def normalize(text: str) -> str:
     # ("opening hours..." is a question, so only the "-s" forms, and "playing", are taken as commands)
     t = re.sub(r"^(open|play|close|search|launch)(?:s|es)\b", r"\1", t)
     t = re.sub(r"^playing\b(?=.+\bon (?:spotify|youtube)$)", "play", t)
+    # "Jarvis gave me an update about everything" (16 Nov, twice): "give me", heard in the past tense
+    t = re.sub(r"^gave me\b", "give me", t)
+    t = re.sub(r"^tells me\b", "tell me", t)
     return t
 
 
@@ -773,14 +776,25 @@ def _board(t: str) -> Intent | None:
         r"\b(?:what did i miss|what(?:'s| has)? happened (?:while|when|since) i (?:was|were|went|left)|"
         r"catch me up|(?:in|from|during|about|of|for|on) my (?:absence|impresence|time away)|"
         r"(?:while|when) i (?:was|were) (?:away|gone|out|not here|sleeping|offline)|since i (?:left|was away)|"
+        r"i (?:wasn'?t|was not|was not|wasnt) (?:there|here|around|home|at my (?:desk|laptop))|"
         r"i'?m back|i am back)\b", t)
     if away:  # "...when I was away, and tell me if anything needs me": both, in one answer (16 Nov, on WhatsApp)
         return Intent("away_update", {"needs": bool(need)})
+    # "I'm going on vacation, can you handle everything?": what needs you before you go, and what Jarvis will do
+    # (16 Nov: the chat model promised "everything will be as you left it")
+    leaving = len(t.split()) <= 22 and re.search(
+        r"\b(?:can|could|will) you (?:handle|take care of|manage|look after) (?:everything|it all|things|all of it)|"
+        r"(?:i'?m|i am) (?:going|off|leaving) (?:on (?:a )?(?:vacations?|holidays?|leave|a trip)|away|out for)\b", t)
+    if leaving:
+        return Intent("needs_me", {"leaving": True})
     if need and len(t.split()) <= 14:
         return Intent("needs_me")
     # "give me the morning update", "what's today's update of my emails, Claude Code and to-dos"
     if len(t.split()) <= 18 and (re.search(r"\b(?:morning|daily|today's|day's) (?:update|updates|briefing|brief|"
                                            r"report|summary|rundown)\b", t)
+                                 or re.search(r"\b(?:give|send|tell) me (?:an? |the |my )?(?:quick )?(?:update|updates|"
+                                              r"rundown|summary) (?:about|on|of|for) (?:all )?(?:my |the )?(?:emails?|"
+                                              r"inbox|claude code|to ?do|tasks|day|everything)\b", t)
                                  or re.fullmatch(r"(?:(?:give|send|tell)(?: me)? )?(?:an? |the |my )?(?:update|updates|"
                                                  r"rundown|quick update)(?: please| now| on everything)?|update me|"
                                                  r"what(?:'s| is) the (?:update|latest|news)(?: today)?", t)):

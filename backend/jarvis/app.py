@@ -1836,7 +1836,10 @@ class Jarvis:
         if tool == "todo_done_all":
             return b.done_all(a.get("scope", "all"))
         if tool == "needs_me":
-            return await b.needs_me()
+            r = await b.needs_me()
+            if a.get("leaving"):  # "I'm going on vacation, can you handle everything?"
+                r.say = f"Of course, {sir}. Before you go: {r.say[:1].lower() + r.say[1:]}"
+            return r
         if tool == "away_update":
             since = b.away_since if time.time() - b.away_since < 86400 else time.time() - 12 * 3600
             away = await b.away_text(since, with_list=not a.get("needs"))
