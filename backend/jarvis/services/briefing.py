@@ -43,6 +43,13 @@ class Board:
         self.walk_next: tuple[str, dict] | None = None   # the walkthrough's next offer (after the emails)
         self._autos: asyncio.Task | None = None
         self._show_when_back = False
+        self._missed: list[str] = []           # scheduled jobs the laptop slept through (asked about once)
+        # when you were last here: "what did I miss?" counts from it. Jarvis starting up counts from when the
+        # laptop was last in use (saved every couple of minutes), so the morning covers the whole night.
+        self.away_since: float = float(self.store.data.get("last_seen") or 0)
+        self._last_tick = 0.0
+        self._locked_since = 0.0
+        self._seen_saved = 0.0
 
     @property
     def sir(self) -> str:
@@ -102,7 +109,8 @@ class Board:
         return {
             "greeting": f"{_part_of_day(now)}, {self.sir.capitalize() if self.sir == 'sir' else self.sir}",
             "date": now.strftime("%A, %d %B %Y"),
-            "items": [{k: i[k] for k in ("id", "text", "owner", "kind", "status", "result", "carried")}
+            "items": [{**{k: i[k] for k in ("id", "text", "owner", "kind", "status", "result", "carried")},
+                       "when": _when_words(i["at"])[3:] if i.get("at") and i["status"] == "scheduled" else ""}
                       for i in day["items"]],
             "emails": emails, "projects": projects, "weather": weather,
             "reminders": [{"id": r["id"], "text": r["text"],
@@ -111,7 +119,7 @@ class Board:
                            dt.datetime.fromtimestamp(r["at"]).strftime("%a")} for r in upcoming[:5]],
             "focus": {"until": int(self.focus_until * 1000), "minutes": self.focus_minutes}
             if self.focus_until > time.time() else None,
-            "log": day.get("log", [])[-8:][::-1],
+            "log": [e[:2] for e in day.get("log", [])[-8:][::-1]],
             "ahead": [{"day": B.day_name(d, now.date()).capitalize(),
                        "items": [{"id": i["id"], "text": i["text"]} for i in items]} for d, items in self.store.ahead(7)],
             "active": self.active,
@@ -261,39 +269,121 @@ class Board:
 
     # ================================================================== briefing and planning
     async def brief_text(self) -> str:
-        """The spoken morning briefing: weather, inbox, projects, and what's carried over."""
+        """The spoken morning update, most useful first: the day and weather, what needs you (emails waiting for
+        your reply), what's on your list and at what time, what Jarvis will handle, and your projects."""
         data = await self.payload(fresh=True)
         now = dt.datetime.now()
-        parts = [f"{_part_of_day(now)}, {self.sir}. It's {now.strftime('%A, the')} {_ordinal(now.day)}."]
+        head = f"{_part_of_day(now)}, {self.sir}. It's {now.strftime('%A, the')} {_ordinal(now.day)}"
         w = data["weather"]
         if w:
-            rain = f", with a {w['rain']} percent chance of rain" if w.get("rain") else ""
-            parts.append(f"It's {w['temp']} degrees in {w['city']}, {w['sky']}, up to {w['hi']} today{rain}.")
+            rain = f", {w['rain']} percent chance of rain" if w.get("rain") and w["rain"] >= 20 else ""
+            head += f", {w['temp']} degrees and {w['sky']} in {w['city']}, up to {w['hi']}{rain}"
+        parts = [head + "."]
         em = data["emails"]
         if em.get("connected"):
             items = em["items"]
             unread = [m for m in items if m["unread"]]
-            if items:
-                names = list(dict.fromkeys(m["from"] for m in (unread or items)))
-                parts.append(f"You have {len(items)} email{'s' if len(items) != 1 else ''} from the last day"
-                             f"{f', {len(unread)} unread' if unread else ''}, from {B.listing(names, 3)}.")
-            else:
-                parts.append("Your inbox is quiet.")
+            waiting = await self.needs_reply()
+            if waiting:
+                who = B.listing(list(dict.fromkeys(m["from_name"] for m in waiting)), 3)
+                parts.append(f"{len(waiting)} email{'s need' if len(waiting) != 1 else ' needs'} your reply, from {who}.")
+            if unread:
+                names = list(dict.fromkeys(m["from"] for m in unread))
+                parts.append(f"{len(unread)} unread in your inbox{' altogether' if waiting else ''}, from "
+                             f"{B.listing(names, 3)}.")
+            elif not waiting:
+                parts.append("Your inbox is all caught up.")
+        yours = [i["text"] for i in self.store.open_items("you")]
+        if yours:
+            carried = sum(1 for i in self.store.open_items("you") if i.get("carried"))
+            extra = f", {carried} of them from yesterday" if carried and carried < len(yours) else \
+                " from yesterday" if carried else ""
+            parts.append(f"On your list{extra}: {B.listing(yours, 4)}.")
+        timed = [(r["at"], r["text"]) for r in self.store.upcoming(time.time())
+                 if dt.datetime.fromtimestamp(r["at"]).date() == now.date()]
+        if timed:
+            parts.append("Coming up: " + "; ".join(f"at {_hm(a)}, {t}" for a, t in timed[:2]) + ".")
+        mine = [i for i in self.store.open_items("jarvis")]
+        if mine:
+            parts.append("I'll take care of " + B.listing([_mine(i) for i in mine], 3) + ".")
         running = [p for p in data["projects"] if p["running"]]
         if running:
             parts.append(f"Claude Code is working in {B.listing([p['name'] for p in running], 2)}.")
-        elif data["projects"]:
-            p = data["projects"][0]
-            parts.append(f"Your most recent project is {re.sub(r'[-_]+', ' ', p['name'])}, active {p['ago']}.")
-        carried = [i["text"] for i in self.store.open_items() if i.get("carried")]
-        if carried:
-            parts.append(f"From yesterday you still have {B.listing(carried, 3)}.")
-        ups = self.store.upcoming(time.time())
-        if ups and dt.datetime.fromtimestamp(ups[0]["at"]).date() == now.date():
-            r = ups[0]
-            parts.append(f"Reminder at {dt.datetime.fromtimestamp(r['at']).strftime('%I:%M %p').lstrip('0')}: "
-                         f"{r['text']}.")
         return " ".join(parts)
+
+    async def away_text(self, since: float, with_list: bool = True) -> str:
+        """Everything since you left: new emails (and which need you), what Jarvis did, reminders, Claude Code."""
+        now = time.time()
+        mins = max(1, int((now - since) / 60))
+        dur = f"{mins} minutes" if mins < 90 else f"{mins // 60} hour{'s' if mins // 60 != 1 else ''}" + \
+            (f" {mins % 60} minutes" if mins % 60 >= 10 and mins < 600 else "")
+        parts = [f"Since {_hm(since)}, about {dur} ago."]
+        news = 0
+        if CTX.gmail is not None:
+            try:
+                q = "in:inbox newer_than:1d" + (" category:primary" if CTX.cfg.get("email", {}).get("only_primary", True)
+                                               else "")
+                msgs = [m for m in await asyncio.to_thread(CTX.gmail.search, q, 30) if m.get("ts", 0) >= since]
+            except Exception as e:
+                log.info("away update: inbox unavailable (%s)", e)
+                msgs = []
+            if msgs:
+                news += 1
+                names = list(dict.fromkeys(m["from_name"] for m in msgs))
+                parts.append(f"{len(msgs)} new email{'s' if len(msgs) != 1 else ''}, from {B.listing(names, 3)}.")
+                self._cache.pop("needs_reply", None)
+                waiting = [m for m in await self.needs_reply() if m.get("ts", 0) >= since]
+                if waiting:
+                    parts.append(f"{'That one needs' if len(waiting) == 1 else f'{len(waiting)} of them need'} "
+                                 f"your reply: " + "; ".join(f"{m['from_name']} about {_short(m['subject'], 50)}"
+                                                              for m in waiting[:3]) + ".")
+        did = [t for _, t in self.store.notes_since(since) if not t.startswith(("Plan:", "Reopened", "Focus session:"))]
+        if did:
+            news += 1
+            parts.append("Here's what happened: " + "; ".join(_spoken_note(t) for t in did[-6:]) + ".")
+        if not news:
+            parts.append("Nothing new came in while you were away.")
+        left = [i["text"] for i in self.store.open_items("you")]
+        if left and with_list:
+            parts.append(f"Still on your list: {B.listing(left, 3)}.")
+        return " ".join(parts)
+
+    async def needs_me(self) -> Result:
+        """Only what needs you (emails waiting for your reply, things waiting for your OK, your own tasks, what I
+        couldn't finish); everything else Jarvis handles, and says so."""
+        sir = self.sir
+        need, pending = [], None
+        waiting = await self.needs_reply()
+        if waiting:
+            need.append(f"{len(waiting)} email{'s' if len(waiting) != 1 else ''} waiting for your reply, from "
+                        + B.listing(list(dict.fromkeys(m["from_name"] for m in waiting)), 3))
+            pending = {"kind": "board_walk", "stage": "emails", "messages": waiting}
+        p = self.j.pending or {}
+        ask = {"send_email": f"the email to {p.get('to_name', '')} is waiting for your OK",
+               "wa_send": f"the WhatsApp message to {p.get('chat', '')} is waiting for your OK",
+               "claude_send": f"the task for Claude Code in {p.get('name', '')} is waiting for your OK"}.get(p.get("kind"))
+        if ask:
+            need.append(ask)
+        failed = [i["text"] for i in self.store.open_items("jarvis") if i["status"] == "failed"]
+        if failed:
+            need.append(f"I couldn't finish {B.listing(failed, 2)}, so {'that needs' if len(failed) == 1 else 'those need'} you")
+        yours = [i["text"] for i in self.store.open_items("you")]
+        if yours:
+            need.append(f"on your list: {B.listing(yours, 4)}")
+        timed = [(r["at"], r["text"]) for r in self.store.upcoming(time.time())
+                 if dt.datetime.fromtimestamp(r["at"]).date() == dt.date.today()]
+        if timed:
+            need.append("coming up, " + "; ".join(f"at {_hm(a)}, {t}" for a, t in timed[:2]))
+        mine = [_mine(i) for i in self.store.open_items("jarvis") if i["status"] != "failed"]
+        rest = f" I'll take care of the rest: {B.listing(mine, 3)}." if mine else " I'll take care of the rest."
+        if not need:
+            return Result(f"Nothing needs you right now, {sir}." + (f" I'm handling {B.listing(mine, 3)}." if mine
+                                                                    else ""), icon="board")
+        say = f"Only {'this needs' if len(need) == 1 else 'these need'} you, {sir}: " + ". ".join(
+            s[:1].upper() + s[1:] for s in need) + "." + rest
+        if pending:
+            say += " Shall I help you reply?" if len(waiting) == 1 else " Shall I help you with the replies?"
+        return Result(say, icon="board", pending=pending)
 
     async def needs_reply(self) -> list[dict]:
         """Emails from real people still waiting for your answer (cached for a few minutes)."""
@@ -306,6 +396,99 @@ class Board:
         except Exception as e:
             log.info("needs-reply check failed: %s", e)
             return []
+
+    # ================================================================== Jarvis's jobs with a time
+    def schedule_email(self, p: dict, at: float, to: str, subject: str) -> dict:
+        """A confirmed draft, to be sent at that time (the draft is already in Gmail; nothing else is written)."""
+        who = (p.get("to_name") or to).split()[0]
+        it = self.store.schedule(f"Email {who}: {_short(subject, 60)}", at, "send_email",
+                                 {"draft_id": p["draft_id"], "to": to, "to_name": p.get("to_name") or to,
+                                  "subject": subject})
+        self.store.note(f"Scheduled for {_hm(at)}: email to {who}")
+        self.push_soon()
+        return it
+
+    def schedule_job(self, text: str, at: float, tool: str, args: dict) -> Result:
+        """"Research AI agents at 4": on Jarvis's list with its time, done then and ticked off."""
+        it = self.store.schedule(text, at, tool, args)
+        self.store.note(f"Scheduled for {_hm(at)}: {it['text']}")
+        self.push_soon()
+        return Result(f"Scheduled, {self.sir}. I'll {it['text'][:1].lower() + it['text'][1:]} "
+                      f"{_when_words(at)} and tick it off when it's done.", icon="board")
+
+    async def _run_jobs(self, now_ts: float) -> None:
+        for it in self.store.due_jobs(now_ts):
+            late = now_ts - it["at"]
+            if late > 1800:  # the laptop was off or asleep: never send an email hours late without asking
+                self.store.set(it, status="failed", result=f"Missed at {_hm(it['at'])}: the laptop was asleep.")
+                self.store.note("Couldn't finish: " + it["text"])
+                self.push_soon()
+                self._missed.append(it["id"])
+                log.info("scheduled job missed: %s", it["text"])
+                continue
+            log.info("scheduled job: %s", it["text"])
+            if it["tool"] == "send_email":
+                await self._send_scheduled(it)
+            else:
+                self.store.set(it, status="queued")
+                if self._autos is None or self._autos.done():
+                    self._autos = asyncio.create_task(self._run_autos())
+        if self._missed and self._free() and not self.j.pending:
+            ids, self._missed = self._missed, []
+            items = [i for i in self.store.items if i["id"] in ids]
+            if items:
+                first = items[0]
+                self.j.pending = {"kind": "job_now", "id": first["id"]}
+                await self.j.board_announce(f"{self.sir.capitalize()}, I couldn't "
+                                            f"{first['text'][:1].lower() + first['text'][1:]} at {_hm(first['at'])}; "
+                                            "the laptop was asleep. Shall I do it now?")
+                self.j.pending = {"kind": "job_now", "id": first["id"]}
+
+    async def run_job(self, it: dict) -> None:
+        """Do a missed job now (you said yes)."""
+        if it["tool"] == "send_email":
+            await self._send_scheduled(it)
+            return
+        self.store.set(it, status="queued")
+        if self._autos is None or self._autos.done():
+            self._autos = asyncio.create_task(self._run_autos())
+
+    async def _send_scheduled(self, it: dict) -> None:
+        a = it["args"]
+        self.store.set(it, status="working")
+        await self.push()
+        try:
+            await asyncio.to_thread(CTX.gmail.send_draft, a["draft_id"])
+            r = Result(f"I sent your email to {a['to_name'].split()[0]}, subject {_short(a['subject'], 60)}.",
+                       icon="mail")
+        except Exception as e:
+            log.exception("scheduled email failed")
+            r = Result(f"Sending failed: {str(e)[:60]}. The draft is still in Gmail.", ok=False, icon="mail")
+        self.store.set(it, status="done" if r.ok else "failed", result=r.say)
+        self.store.note(("Done: " if r.ok else "Couldn't finish: ") + it["text"])
+        self.j.settle()
+        await self.push()
+        await self._report(it, r)
+
+    # ================================================================== mark everything done
+    def done_all(self, scope: str = "all") -> Result:
+        """"I've done all my tasks" / "mark yesterday's tasks done": your open items, ticked off at once."""
+        items = [i for i in self.store.open_items("you") if scope != "yesterday" or i.get("carried")]
+        if not items and scope == "yesterday":
+            items = self.store.open_items("you")
+        if not items:
+            return Result(f"There's nothing left on your list, {self.sir}.", icon="board")
+        for i in items:
+            self.store.set(i, status="done")
+        self.store.note(f"Ticked off: {len(items)} item{'s' if len(items) != 1 else ''} at once")
+        self.push_soon()
+        left = self.store.open_items()
+        say = (f"Done. I've ticked off {B.listing([i['text'] for i in items], 4)}." if len(items) <= 4 else
+               f"Done. All {len(items)} of your items are ticked off.")
+        mine = [i for i in left if i["owner"] == "jarvis"]
+        say += (f" Still on my side: {B.listing([_mine(i) for i in mine], 2)}." if mine else
+                f" Your list is clear. Great work, {self.sir}.")
+        return Result(say, icon="board")
 
     def _project_offer(self, p: dict) -> tuple[str, dict]:
         name = re.sub(r"[-_]+", " ", p["name"])
@@ -382,7 +565,8 @@ class Board:
         return Result(" ".join(parts), icon="board")
 
     async def morning(self, asked: bool = False) -> None:
-        """Open the board, brief you and ask what's on today: out loud, and on WhatsApp."""
+        """The morning update: spoken on the laptop with the board up, then "what's on today?". If the laptop
+        is locked it goes to WhatsApp (text and a voice note) and is spoken when you open the laptop."""
         from ..tools.whatsapp import screen_locked
 
         day = self.store.day()
@@ -394,13 +578,24 @@ class Board:
                     "What would you like to get done today? Tell me and I'll put it on the board.")
         locked = await asyncio.to_thread(screen_locked)
         remote = self.j.remote
-        if remote is not None and remote.linked and (not asked or locked):
-            remote.notify(f"☀️ *{brief}*\n\n{question.replace('Tell me', 'Reply here')}")
+        text = f"☀️ *{brief}*\n\n{question.replace('Tell me', 'Reply here')}"
         self.j.pending = {"kind": "plan_today"}
         if locked:
-            self._show_when_back = True
-            log.info("morning briefing sent to WhatsApp (laptop locked)")
+            day["spoken_morning"] = False  # said out loud as soon as you open the laptop
+            self.store.save()
+            if remote is not None and remote.linked and not day.get("sent_morning"):
+                day["sent_morning"] = True
+                self.store.save()
+                remote.notify(text)
+                asyncio.create_task(remote.voice_note(brief))
+            log.info("morning update sent to WhatsApp (laptop locked)")
             return
+        day["spoken_morning"] = True
+        self.store.save()
+        if remote is not None and remote.linked and not asked and not day.get("sent_morning"):
+            day["sent_morning"] = True
+            self.store.save()
+            remote.notify(text)
         await self.show("all", focus=False, fresh=True)
         await self.j.board_say(Result(f"{brief} {question}", pending={"kind": "plan_today"}), follow=True)
 
@@ -709,6 +904,7 @@ class Board:
                 await self._tick_clock()
             except Exception:
                 log.exception("board clock")
+            self._last_tick = time.time()  # after the tick: a long briefing isn't mistaken for the laptop sleeping
             if time.time() - warmed > 300 and self._free():
                 warmed = time.time()
                 asyncio.create_task(self._warm())
@@ -728,14 +924,38 @@ class Board:
         return (not j.in_call and j.state in ("idle",) and j._remote_said is None
                 and (j.task is None or j.task.done()))
 
+    def _presence(self, now_ts: float, locked: bool) -> bool:
+        """Notice you leaving and coming back (the laptop locked or asleep); True the moment you're back."""
+        back = False
+        slept = self._last_tick and now_ts - self._last_tick > 120  # ticks are 15 s apart while awake
+        if slept and not self._locked_since:
+            self.away_since = self._last_tick
+            back = not locked
+        if locked:
+            self._locked_since = self._locked_since or (self._last_tick if slept else now_ts)
+        elif self._locked_since:
+            self.away_since = self._locked_since
+            self._locked_since = 0.0
+            back = True
+        if not locked and now_ts - self._seen_saved > 120:
+            self._seen_saved = now_ts
+            self.store.data["last_seen"] = now_ts
+            self.store.save()
+        if back:
+            log.info("you're back (away since %s)", dt.datetime.fromtimestamp(self.away_since).strftime("%H:%M"))
+        return back
+
     async def _tick_clock(self) -> None:
         from ..tools.whatsapp import screen_locked
 
         now_ts = time.time()
+        locked = await asyncio.to_thread(screen_locked)
+        back = self._presence(now_ts, locked)
         for r in self.store.due(now_ts):
             r["fired"] = True
             self.store.save()
             await self._fire(r)
+        await self._run_jobs(now_ts)
         if self.focus_until and self.focus_until <= now_ts:
             self.focus_until = 0
             self.store.note("Focus session complete")
@@ -745,23 +965,23 @@ class Board:
             return
         now = dt.datetime.now()
         day = self.store.day()
-        if self._show_when_back and self._free() and not await asyncio.to_thread(screen_locked):
-            self._show_when_back = False
-            await self.show("all", focus=False, fresh=True)
-            await self.j.board_announce(f"Welcome back, {self.sir}. Your board is up. Tell me today's plan "
-                                        "whenever you're ready.")
-            return
         morning = B.parse_hhmm(self.cfg.get("morning_at", "09:00"), dt.time(9, 0))
         until = B.parse_hhmm(self.cfg.get("morning_until", "14:00"), dt.time(14, 0))
-        if self.cfg.get("morning", True) and not day.get("briefed") and morning <= now.time() < until \
-                and self._free():
-            log.info("morning briefing")
-            await self.morning()
-            return
+        if self.cfg.get("morning", True) and morning <= now.time() < until:
+            # the first time the laptop is open after 9 (Jarvis starting, waking it, unlocking it): the morning
+            # update out loud. While it's locked: on WhatsApp, then out loud when you open it.
+            spoken = day.get("spoken_morning", day.get("briefed", False))
+            if not spoken and not locked and self._free():
+                log.info("morning update%s", " (laptop opened)" if back else "")
+                await self.morning()
+                return
+            if not day.get("briefed") and locked:
+                log.info("morning update (laptop locked)")
+                await self.morning()
+                return
         evening = B.parse_hhmm(self.cfg.get("evening_at", "18:30"), dt.time(18, 30))
         quiet = time.monotonic() - getattr(self.j, "last_heard", 0.0) > 120  # not in the middle of talking to you
-        if self.cfg.get("evening", True) and not day.get("wrapped") and now.time() >= evening and day["items"] \
-                and self._free() and quiet:
+        if self.cfg.get("evening", True) and not day.get("wrapped") and now.time() >= evening and day["items"]                 and self._free() and quiet and not locked:
             day["wrapped"] = True
             self.store.save()
             await self._evening()
@@ -793,6 +1013,42 @@ class Board:
         if remote is not None and remote.linked and self.store.day().get("source") == "whatsapp":
             remote.notify(f"🌙 {line}\n\n{self.text_list()}")
         await self.j.board_announce(line)
+
+
+def _mine(it: dict) -> str:
+    """One of Jarvis's items as said aloud: "the email to Sara at 3 PM", "research AI agents"."""
+    text = it["text"][:1].lower() + it["text"][1:]
+    if it.get("status") == "scheduled" and it.get("at"):
+        when = dt.datetime.fromtimestamp(it["at"])
+        day = "" if when.date() == dt.date.today() else (" tomorrow" if when.date() == dt.date.today() +
+                                                          dt.timedelta(days=1) else when.strftime(" on %A"))
+        text += f"{day} at {_hm(it['at'])}"
+    return text
+
+
+def _when_words(ts: float) -> str:
+    """"at 3 PM", "tomorrow at 9 AM", "on Friday at 4 PM"."""
+    d = dt.datetime.fromtimestamp(ts).date()
+    today = dt.date.today()
+    day = "" if d == today else "tomorrow " if d == today + dt.timedelta(days=1) else f"on {d.strftime('%A')} "
+    return f"{day}at {_hm(ts)}"
+
+
+def _hm(ts: float) -> str:
+    """3 PM, 3:30 PM."""
+    d = dt.datetime.fromtimestamp(ts)
+    return d.strftime("%I:%M %p").lstrip("0").replace(":00 ", " ")
+
+
+def _spoken_note(t: str) -> str:
+    """An activity-log line, said aloud: "Done: Research AI agents" -> "I finished research AI agents"."""
+    if t.startswith("Done: "):
+        return "I finished " + t[6:7].lower() + t[7:]
+    if t.startswith("Couldn't finish: "):
+        return "I couldn't finish " + t[17:18].lower() + t[18:]
+    if t.startswith("Reminder: "):
+        return "you had a reminder to " + t[10:11].lower() + t[11:]
+    return t[:1].lower() + t[1:]
 
 
 def _part_of_day(now: dt.datetime) -> str:

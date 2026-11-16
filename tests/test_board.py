@@ -377,3 +377,163 @@ def test_awesome_gets_a_reply_not_a_shrug(jarvis):
     j._heard_conf = -0.78
     asyncio.run(j.handle_text("Awesome."))
     assert said[-1] == "Glad you like it, sir."
+
+
+# ------------------------------------------------------------------------------------------- 16 Nov: jobs and updates
+def test_a_time_in_a_request_makes_a_job():
+    now = dt.datetime(2026, 11, 16, 10, 0)
+    rest, when = B.split_schedule("send an email to sara at 3 pm about the invoice", now)
+    assert rest == "send an email to sara about the invoice" and when.hour == 15
+    assert B.split_schedule("research ai agents on chatgpt at 4", now)[1].hour == 16
+    assert B.split_schedule("remind me at 5 to call ali", now) is None
+    assert B.split_schedule("what's the weather at 5 pm", now) is None          # a question
+    assert B.split_schedule("email sara that the meeting is at 3 pm", now) is None  # the time is the message
+
+
+def test_a_scheduled_job_moves_to_the_next_day_once(tmp_path):
+    day = [dt.date(2026, 11, 15)]
+    s = B.Store(tmp_path / "b.json", today=lambda: day[0])
+    s.schedule("Email Sara: Invoice", time.time() - 60, "send_email", {"draft_id": "d1"})
+    day[0] = dt.date(2026, 11, 16)
+    s2 = B.Store(tmp_path / "b.json", today=lambda: day[0])
+    assert [i["status"] for i in s2.items] == ["scheduled"]
+    assert len(s2.due_jobs(time.time())) == 1  # never twice
+
+
+def test_mark_all_done(jarvis):
+    j, b, said, _ = jarvis
+    b.store.add("Call Ali")
+    b.store.add("Finish the report")
+    j.pending = {"kind": "plan_today"}
+    asyncio.run(j.handle_text("I've done all my tasks, mark them", typed=True))
+    assert all(i["status"] == "done" for i in b.store.items) and "ticked off" in said[-1]
+
+
+def test_does_anything_need_me_says_only_what_needs_you(jarvis):
+    j, b, said, _ = jarvis
+    b.store.add("Call the bank")
+    b._add("Research AI agents on ChatGPT")
+    asyncio.run(j.handle_text("is there my need?", typed=True))
+    assert "call the bank" in said[-1].lower() and "I'll take care of the rest" in said[-1]
+    assert "research AI agents" in said[-1]
+
+
+def test_what_did_i_miss(jarvis):
+    j, b, said, _ = jarvis
+    b.away_since = time.time() - 3600
+    b.store.note("Done: Research AI agents")
+    asyncio.run(j.handle_text("give me the update from my absence", typed=True))
+    assert "I finished research AI agents" in said[-1]
+
+
+def test_a_research_with_a_time_is_scheduled_and_runs_then(jarvis, monkeypatch):
+    j, b, said, _ = jarvis
+    later = (dt.datetime.now() + dt.timedelta(hours=2)).replace(minute=0)
+    if later.date() != dt.date.today():
+        pytest.skip("too close to midnight")
+    h = later.strftime("%I").lstrip("0") + (" pm" if later.hour >= 12 else " am")
+    asyncio.run(j.handle_text(f"research ai agents on chatgpt at {h}", typed=True))
+    it = b.store.items[-1]
+    assert it["status"] == "scheduled" and "Scheduled" in said[-1]
+    calls = []
+
+    async def run_tool(name, args):
+        calls.append(name)
+        return Result("Done researching.")
+    monkeypatch.setattr(j, "run_tool", run_tool)
+
+    async def go():
+        await b._run_jobs(it["at"] + 5)
+        await b._autos
+    asyncio.run(go())
+    assert calls == ["ai_research"] and it["status"] == "done"
+
+
+def test_an_email_with_a_time_is_scheduled_after_you_confirm(jarvis, monkeypatch):
+    j, b, said, _ = jarvis
+    sent = []
+
+    class G:
+        me = "me@x.com"
+
+        def send_draft(self, d):
+            sent.append(d)
+    monkeypatch.setattr(CTX, "gmail", G())
+    at = time.time() + 7200
+    j._sched_at = (at, time.monotonic())
+    asyncio.run(j._deliver([Result("Here's the draft to Sara, subject Invoice. Shall I send it?",
+                                   pending={"kind": "send_email", "draft_id": "d1", "to": "sara@x.com",
+                                            "to_name": "Sara Khan", "subject": "Invoice", "body": "Hi"})]))
+    assert "Shall I schedule it?" in said[-1] and j.pending["at"] == at
+    asyncio.run(j.handle_text("yes", typed=True))
+    assert sent == [] and "Scheduled" in said[-1]
+    it = b.store.items[-1]
+    assert it["status"] == "scheduled" and it["args"]["draft_id"] == "d1"
+    asyncio.run(b._run_jobs(at + 5))
+    assert sent == ["d1"] and it["status"] == "done"
+
+
+def test_a_job_the_laptop_slept_through_is_asked_about(jarvis, monkeypatch):
+    j, b, said, _ = jarvis
+    sent = []
+    monkeypatch.setattr(CTX, "gmail", type("G", (), {"send_draft": lambda self, d: sent.append(d)})())
+    it = b.store.schedule("Email Sara: Invoice", time.time() - 7200, "send_email",
+                          {"draft_id": "d1", "to": "s@x.com", "to_name": "Sara", "subject": "Invoice"})
+    asyncio.run(b._run_jobs(time.time()))
+    assert sent == [] and "Shall I do it now?" in said[-1] and j.pending["kind"] == "job_now"
+    asyncio.run(j.handle_text("yes", typed=True))
+    assert sent == ["d1"] and b.store.get(it["id"])["status"] == "done"
+
+
+def test_the_morning_update_is_spoken_once_when_you_open_the_laptop(jarvis, monkeypatch):
+    j, b, said, _ = jarvis
+    from jarvis.tools import whatsapp
+
+    locked = [True]
+    monkeypatch.setattr(whatsapp, "screen_locked", lambda: locked[0])
+    real = dt.datetime
+
+    class Morning(real):
+        @classmethod
+        def now(cls, tz=None):
+            return real.combine(real.today().date(), dt.time(9, 30))
+    monkeypatch.setattr(dt, "datetime", Morning)
+    asyncio.run(b._tick_clock())  # locked at 9:30: not spoken yet
+    assert not said and b.store.day()["spoken_morning"] is False
+    locked[0] = False
+    j.pending = None
+    asyncio.run(b._tick_clock())  # opened: spoken
+    assert said and "Good morning" in said[-1]
+    n = len(said)
+    j.pending = None
+    asyncio.run(b._tick_clock())
+    assert len(said) == n  # once a day
+
+
+@pytest.mark.parametrize("said,tool", [
+    ("i've done all my yesterday's task so please mark them", "todo_done_all"),
+    ("mark my tasks done", "todo_done_all"),
+    ("is there my need", "needs_me"),
+    ("does anything need me", "needs_me"),
+    ("give me the update from my impresence", "away_update"),
+    ("what did i miss", "away_update"),
+    ("can you give me a morning update", "briefing"),
+    ("what is today's update of my emails claude code and my to do tasks", "briefing"),
+])
+def test_new_board_phrases(said, tool):
+    from jarvis.brain.intents import normalize
+
+    i = parse(normalize(said))
+    assert i is not None and i.tool == tool
+
+
+def test_away_and_needs_in_one_request(jarvis):
+    j, b, said, _ = jarvis
+    from jarvis.brain.intents import normalize
+
+    i = parse(normalize("Jarvis give me a bit when I was away and also tells me if anything needs me."))
+    assert i.tool == "away_update" and i.args["needs"]
+    b.away_since = time.time() - 600
+    b.store.add("Call the bank")
+    asyncio.run(j.handle_text("give me an update of when i was away and also tell me if anything needs me", typed=True))
+    assert "Since" in said[-1] and "needs you" in said[-1] and said[-1].lower().count("call the bank") == 1

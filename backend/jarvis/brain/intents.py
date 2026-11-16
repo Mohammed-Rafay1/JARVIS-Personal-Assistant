@@ -715,7 +715,8 @@ _WEB_TOOLS = {"open_website", "web_search", "play_youtube", "web_research"}
 _BOARD_WORD = r"(?:board|dashboard|status board|daily board|hud|overview|status screen|command (?:center|centre))"
 _LIST_WORD = r"(?:to ?do(?:s| list)?|to-do(?:s| list)?|tasks?|task list|list|checklist|board)"
 _TODAY = r"(?: for today| today| for the day)?"
-BOARD_TOOLS = {"board_show", "board_hide", "briefing", "todo_list", "todo_ahead", "plan_day", "plan_items", "todo_add", "todo_done",
+BOARD_TOOLS = {"board_show", "board_hide", "briefing", "away_update", "needs_me", "todo_done_all",
+               "todo_list", "todo_ahead", "plan_day", "plan_items", "todo_add", "todo_done",
                "todo_undo", "todo_remove", "todo_clear_done", "board_run", "reminder", "reminder_list",
                "focus_start", "focus_stop"}
 
@@ -744,9 +745,46 @@ def _todo_text(t: str) -> str | None:
     return rest if len(rest) >= 3 and not re.fullmatch(_LISTISH, rest) else None
 
 
+_DONE_ALL = re.compile(
+    r"^(?:(?:ok|okay|so|jarvis|yes|well)\s+)*(?:"
+    r"(?:i(?:'ve|ve| have)?)\s+(?:already\s+|just\s+|finally\s+)?(?:done|finished|completed|did)\s+"
+    r"(?:all|everything|them all|these all|those all|all of them|all of these|all of those|all my|all the|all of my)"
+    r"|(?:mark|tick|check|cross)(?: off)?\s+(?:all|everything|them all|these|those|all of them|all my|my|the|all the)"
+    r"(?:\s+(?:of\s+)?(?:my\s+)?(?:yesterday's\s+|today's\s+)?(?:tasks?|to ?dos?|items?|things|list))?"
+    r"(?:\s+(?:as\s+)?(?:done|complete|completed|finished|off))?$"
+    r"|(?:all|everything|all my tasks|all of them|these|those)\s+(?:is|are)\s+(?:done|finished|complete|completed)$)")
+
+
 def _board(t: str) -> Intent | None:
     t = re.sub(r"\bto-do\b", "to do", t)
     t = re.sub(r"\btodays\b", "today's", t)
+    # "I've done all my yesterday's tasks", "mark my tasks done", "I've done these all" (16 Nov: these became one
+    # fuzzy match, or the chat model, instead of ticking everything off)
+    if _DONE_ALL.match(t) and len(t.split()) <= 16:
+        return Intent("todo_done_all", {"scope": "yesterday" if "yesterday" in t else "all"})
+    # "does anything need me?", "is there my need", "what needs my attention"
+    need = len(t.split()) <= 22 and re.search(
+        r"\b(?:(?:anything|something|what)\s+(?:that\s+)?(?:needs?|requires?)\s+(?:me|my\b)|is there my need|"
+        r"(?:do|does|is there anything|is anything)\s+(?:you\s+)?(?:need|needs|requiring|that needs)\s+(?:me|my)|"
+        r"what do you need (?:from )?me|anything (?:for me|i need to (?:do|handle|look at|check))|"
+        r"need my (?:attention|input|approval)|what(?:'s| is) waiting (?:for|on) me)\b", t)
+    # "what did I miss?", "update from my absence", "catch me up", "give me an update of when I was away"
+    away = len(t.split()) <= 22 and re.search(
+        r"\b(?:what did i miss|what(?:'s| has)? happened (?:while|when|since) i (?:was|were|went|left)|"
+        r"catch me up|(?:in|from|during|about|of|for|on) my (?:absence|impresence|time away)|"
+        r"(?:while|when) i (?:was|were) (?:away|gone|out|not here|sleeping|offline)|since i (?:left|was away)|"
+        r"i'?m back|i am back)\b", t)
+    if away:  # "...when I was away, and tell me if anything needs me": both, in one answer (16 Nov, on WhatsApp)
+        return Intent("away_update", {"needs": bool(need)})
+    if need and len(t.split()) <= 14:
+        return Intent("needs_me")
+    # "give me the morning update", "what's today's update of my emails, Claude Code and to-dos"
+    if len(t.split()) <= 18 and (re.search(r"\b(?:morning|daily|today's|day's) (?:update|updates|briefing|brief|"
+                                           r"report|summary|rundown)\b", t)
+                                 or re.fullmatch(r"(?:(?:give|send|tell)(?: me)? )?(?:an? |the |my )?(?:update|updates|"
+                                                 r"rundown|quick update)(?: please| now| on everything)?|update me|"
+                                                 r"what(?:'s| is) the (?:update|latest|news)(?: today)?", t)):
+        return Intent("briefing")
     # reminders: "remind me at 5 to call Ali", "remind me to stretch in 20 minutes"
     if re.fullmatch(r"(?:what are|show(?: me)?|list|tell me|read)(?: all)?(?: of)? my reminders(?: for today| today)?|"
                     r"(?:any|my) reminders(?: today)?|do i have (?:any )?reminders(?: today| set)?", t):

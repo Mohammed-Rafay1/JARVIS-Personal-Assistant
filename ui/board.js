@@ -184,8 +184,10 @@ function renderMission(items) {
   }));
   const label = { todo: 'Standing by', queued: 'Queued', working: 'Running', done: 'Complete', failed: 'Needs a retry' };
   $('me').replaceChildren(...[...mine].sort(order).map((i) => el('li', { class: `item jt ${i.status}`, 'data-id': i.id },
-    el('div', { class: 'state' }, i.status === 'done' ? '✓' : i.status === 'failed' ? '!' : i.status === 'working' ? '' : '›'),
-    el('div', { class: 'txt' }, i.text, el('div', { class: 'chip2' }, label[i.status] || i.status)),
+    el('div', { class: 'state' }, i.status === 'done' ? '✓' : i.status === 'failed' ? '!' : i.status === 'working' ? '' :
+      i.status === 'scheduled' ? '◷' : '›'),
+    el('div', { class: 'txt' }, i.text, el('div', { class: 'chip2' },
+      i.status === 'scheduled' ? `Scheduled · ${i.when}` : (label[i.status] || i.status))),
     el('button', { class: 'x', title: 'Remove', onclick: () => act('remove', { id: i.id }) }, '×'),
     i.status === 'working' ? el('div', { class: 'bar' }) : null,
     i.result ? el('div', { class: 'result', title: 'Click to expand', onclick: (e) => e.currentTarget.classList.toggle('open') }, i.result) : null)));

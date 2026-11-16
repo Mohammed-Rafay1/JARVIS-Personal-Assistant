@@ -82,9 +82,11 @@ class Store:
             if earlier:
                 have = {_key(i["text"]) for i in rec["items"]}
                 for it in days[earlier[-1]].get("items", []):
-                    if it["status"] != "done" and _key(it["text"]) not in have:
-                        rec["items"].append({**it, "carried": True, "id": _new_id(),
-                                             "status": "todo" if it["status"] != "failed" else "failed"})
+                    if it["status"] not in ("done", "moved") and _key(it["text"]) not in have:
+                        keep = it["status"] if it["status"] in ("failed", "scheduled") else "todo"
+                        rec["items"].append({**it, "carried": True, "id": _new_id(), "status": keep})
+                        if keep == "scheduled":  # the job moves with it, so it can't run twice
+                            it["status"] = "moved"
             rec["opened"] = True
             days[self.key] = rec
             self.save()
@@ -151,11 +153,38 @@ class Store:
         return [i for i in self.items if i["status"] != "done" and (owner is None or i["owner"] == owner)]
 
     def note(self, text: str) -> None:
-        """One line in today's activity log (shown on the board)."""
+        """One line in today's activity log (shown on the board; "what did I miss" reads it back)."""
         lg = self.day().setdefault("log", [])
-        lg.append([time.strftime("%H:%M"), text])
-        del lg[:-30]
+        lg.append([time.strftime("%H:%M"), text, time.time()])
+        del lg[:-40]
         self.save()
+
+    def notes_since(self, since: float) -> list[tuple[str, str]]:
+        """(time, text) of what Jarvis logged since then (today and yesterday)."""
+        out = []
+        for k in sorted(self.data["days"])[-3:]:
+            if k > self.key:
+                continue
+            for entry in self.data["days"][k].get("log", []):
+                if len(entry) >= 3 and entry[2] >= since:
+                    out.append((entry[0], entry[1]))
+        return out
+
+    # scheduled jobs: Jarvis's own items with a time ("send the email to Sara at 3 PM") -------------------
+    def schedule(self, text: str, at: float, tool: str, args: dict | None = None, **extra) -> dict:
+        on = dt.date.fromtimestamp(at)
+        it = self.add(text, "jarvis", "scheduled", tool, args, on=on if on > self._today() else None)
+        it.update(status="scheduled", at=at, **extra)
+        self.save()
+        return it
+
+    def due_jobs(self, now: float) -> list[dict]:
+        return [i for k, rec in self.data["days"].items() if k <= self.key for i in rec["items"]
+                if i.get("status") == "scheduled" and i.get("at", 0) <= now]
+
+    def scheduled(self) -> list[dict]:
+        return sorted((i for k, rec in self.data["days"].items() if k >= self.key for i in rec["items"]
+                       if i.get("status") == "scheduled"), key=lambda i: i.get("at", 0))
 
     # reminders ---------------------------------------------------------------------------------
     def remind(self, text: str, at: float) -> dict:
@@ -376,6 +405,28 @@ def parse_reminder(t: str, now: dt.datetime) -> tuple[str, dt.datetime] | None:
     what = re.sub(r"^\s*(?:to|that|about|for|i have to|i need to)\s+", "", re.sub(r"\s+", " ", what).strip())
     what = re.sub(r"\s+(?:to|that|about)$", "", what).strip(" ,.")
     return (what or "your reminder"), when
+
+
+def split_schedule(t: str, now: dt.datetime) -> tuple[str, dt.datetime] | None:
+    """"send an email to sara at 3 pm about the invoice" -> ("send an email to sara about the invoice", 15:00):
+    a request with a time in it, for Jarvis to do then. None when there's no time, or it's a reminder."""
+    if re.match(r"^(?:set (?:a |an )?reminder|remind me|reminder)\b", t):
+        return None
+    got = parse_when(t, now)
+    if not got:
+        return None
+    when, said = got
+    if re.match(r"^(?:what|what's|whats|when|where|which|who|why|how|is|are|am|was|were|will|would|does|do|did|"
+                r"has|have|tell me|show me)\b", t):
+        return None  # a question ("what's the weather at 5?"), not a job
+    head = t[:t.find(said)]
+    if re.search(r"\b(?:saying|say|says|that|telling|tell (?:him|her|them)|asking|about|regarding|message|"
+                 r"subject)\b", head):
+        return None  # the time is part of what to say ("email Sara that the meeting is at 3")
+    rest = t.replace(said, " ")
+    rest = re.sub(r"\b(?:today|tomorrow|tonight|this (?:morning|afternoon|evening))\b", " ", rest)
+    rest = re.sub(r"\s+", " ", rest).strip(" ,")
+    return (rest, when) if len(rest.split()) >= 2 else None
 
 
 def spoken_time(when: dt.datetime, now: dt.datetime) -> str:

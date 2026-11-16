@@ -192,6 +192,15 @@ class WhatsAppRemote:
         log.info("WhatsApp report: %r", text[:120])
         return True
 
+    async def voice_note(self, text: str) -> bool:
+        """A voice note Jarvis sends by itself (the morning update while the laptop is locked), to the same chat
+        as notify()."""
+        chat = self.last_chat or self_chat(self.me)
+        if not chat or not self.linked:
+            return False
+        await self._send_voice(chat, text)
+        return True
+
     async def _on_event(self, ev: dict) -> None:
         kind = ev.get("type")
         if kind == "qr":

@@ -92,6 +92,11 @@ _REPEAT = re.compile(
 _PLANNER_WORDS = re.compile(r"\b(?:tasks?|to ?dos?|todo|list|plans?|planner|planned|meetings?|schedule|agenda|"
                             r"tomorrow|today|tonight|remind(?:er|ers)?|deadline|board|mission|week|weekend|monday|"
                             r"tuesday|wednesday|thursday|friday|saturday|sunday|appointment|call with|busy|free)\b")
+# an answer to "what's on today?" that is really a question or a request, not a list of things to do
+_NOT_A_PLAN = re.compile(r"^(?:what|what's|whats|when|where|which|who|why|how|is|are|am|was|were|do you|do i|does|did|"
+                         r"can you|could you|would you|will you|should i|tell me|show me|give me|let me know|"
+                         r"i want to know|explain|have you|has|any)\b|\b(?:updates|status|briefing|overview|summary|"
+                         r"(?:the|an|my|today's|morning|daily) update)\b")
 # short praise or thanks: answered at once, never "I didn't catch that"
 _THANKS = re.compile(r"(?:(?:that's|thats|that is|it's|its|so|very|really|just)\s+)?(?:awesome|amazing|great|nice|cool|"
                      r"perfect|brilliant|excellent|wow|love it|good job|well done|thanks|thank you|thank you so much|"
@@ -197,6 +202,8 @@ class Jarvis:
         self._last_chat = 0.0
         self._said: list[str] = []    # what Jarvis has said since you last spoke ("What?" repeats it)
         self._last_play: dict | None = None   # the last song asked for, so "start it" can retry it
+        # "email Sara at 3 PM": the time, held while the email is put together (the draft is then scheduled)
+        self._sched_at: tuple[float, float] | None = None
         self._last_reply = ""
         self.follow_up = False
         self.speak_aloud = True
@@ -996,6 +1003,13 @@ class Jarvis:
             if handled:
                 return
         whole = parse(t, self.cfg["music"]["default_service"], self._resolve_open)
+        job = self._timed_job(t, whole)
+        if job is not None:
+            if isinstance(job, Result):  # scheduled on Jarvis's list (or a reminder)
+                await self._deliver([job])
+                return
+            t = text = job  # an email: put together and read back now, sent at that time
+            whole = parse(t, self.cfg["music"]["default_service"], self._resolve_open)
         if whole is not None and whole.tool in BOARD_TOOLS:
             # "today I need to call Ali and email Sara" is one plan, not a call plus an email to start now
             parts, intents = [t], [whole]
@@ -1208,6 +1222,14 @@ class Jarvis:
 
     async def _deliver(self, results: list[Result]) -> None:
         for r in results:
+            if r.pending and r.pending.get("kind") == "send_email" and self._sched_at \
+                    and time.monotonic() - self._sched_at[1] < 900:
+                from .services.briefing import _when_words
+
+                at, self._sched_at = self._sched_at[0], None
+                r.pending["at"] = at
+                r.say = re.sub(r"\s*Shall I send it\?\s*$", "", r.say) + \
+                    f" I'll send it {_when_words(at)}. Shall I schedule it?"
             if r.card:
                 self.ui.send({"type": "card", **r.card})
                 if self._remote_said is not None:
@@ -1235,7 +1257,8 @@ class Jarvis:
     async def _handle_pending(self, t: str, raw: str) -> bool:
         p = self.pending
         kind = p["kind"]
-        if kind in ("plan_today", "board_start", "board_guided", "todo_confirm", "board_walk") and self.board is not None:
+        if kind in ("plan_today", "board_start", "board_guided", "todo_confirm", "board_walk", "job_now") \
+                and self.board is not None:
             return await self._board_pending(p, t, raw)
         if kind == "song_query":  # answer to "Which song should I play?"
             self.pending = None
@@ -1727,6 +1750,35 @@ class Jarvis:
         return True
 
     # ------------------------------------------------------------------ the board
+    def _timed_job(self, t: str, whole: Intent | None) -> Result | str | None:
+        """"Send an email to Sara at 3 PM", "research AI agents at 4": a job for Jarvis at a time. An email
+        comes back as the request without its time (the draft is made and read back now, and sent then); a
+        research / check goes on the list with its time; a WhatsApp message or Claude Code task (read back to
+        you before it goes) becomes a reminder at that time."""
+        if self.board is None or (whole is not None and whole.tool in BOARD_TOOLS):
+            return None
+        got = board_words.split_schedule(t, dt.datetime.now())
+        if not got:
+            return None
+        rest, when = got
+        if when.timestamp() < time.time() + 60:
+            return None
+        inner = parse(rest, self.cfg["music"]["default_service"], self._resolve_open)
+        if inner is None:
+            return None
+        if inner.tool in ("draft_email", "email_ask_content"):
+            self._sched_at = (when.timestamp(), time.monotonic())
+            log.info("email for %s: %r", when.strftime("%H:%M"), rest)
+            return rest
+        if inner.tool in board_words.AUTO_TOOLS:
+            return self.board.schedule_job(rest, when.timestamp(), inner.tool, dict(inner.args))
+        if inner.tool in ("whatsapp_message", "whatsapp_ask", "claude_code_task"):
+            self.board.store.remind(rest, when.timestamp())
+            self.board.push_soon()
+            return Result(f"Those I read back to you before they go, so I'll remind you "
+                          f"{board_words.spoken_time(when, dt.datetime.now())} to {rest}.", icon="board")
+        return None
+
     async def _board_intent(self, intent: Intent, raw: str) -> Result | None:
         """A board / to-do / reminder / focus command. None when it already spoke for itself."""
         b, a, tool = self.board, intent.args, intent.tool
@@ -1781,6 +1833,17 @@ class Jarvis:
                                "report and email Sara.", ok=False, icon="board")
         if tool == "todo_done":
             return b.complete(a.get("text", ""), explicit=True)
+        if tool == "todo_done_all":
+            return b.done_all(a.get("scope", "all"))
+        if tool == "needs_me":
+            return await b.needs_me()
+        if tool == "away_update":
+            since = b.away_since if time.time() - b.away_since < 86400 else time.time() - 12 * 3600
+            away = await b.away_text(since, with_list=not a.get("needs"))
+            if a.get("needs"):  # "...and tell me if anything needs me"
+                need = await b.needs_me()
+                return Result(f"{away} {need.say}", icon="board", pending=need.pending)
+            return Result(away, icon="board", card=b._list_card())
         if tool in ("todo_undo", "todo_remove"):
             pool = [i for i in b.store.items if tool == "todo_remove" or i["status"] == "done"]
             it, score, clear = board_words.best_match(a.get("text", ""), pool)
@@ -1827,6 +1890,10 @@ class Jarvis:
                 return False  # a different command; the question can still be answered later
             if "?" in raw and _is_conversation(raw, t):
                 return False  # a question back ("what did I have yesterday?"): the conversation handles it
+            if _NOT_A_PLAN.match(t):
+                # a question or a request, not today's plan (16 Nov: "what is today's update of my emails, Claude
+                # Code and my to-do tasks" became two junk to-dos)
+                return False
             m = re.match(r"^(?:add|put)\s+(?P<x>.+?)(?:\s+(?:to|on) (?:my |the )?(?:list|to ?do list|board))?$", raw.strip(),
                          re.I)
             r = await b.take_plan(m.group("x") if m else raw, "laptop" if self._remote_said is None else "whatsapp")
@@ -1837,6 +1904,17 @@ class Jarvis:
             return True
         if kind == "board_walk":
             return await self._board_walk(p, t, raw)
+        if kind == "job_now":  # "I couldn't send the email at 3, the laptop was asleep. Shall I do it now?"
+            self.pending = None
+            it = b.store.get(p.get("id", ""))
+            if YES.match(t) and it:
+                await self.say("On it.", then_idle=True)
+                await b.run_job(it)
+                return True
+            if NO.match(t):
+                await self.say("Okay, I'll leave it on the board.", then_idle=True)
+                return True
+            return False
         if kind == "todo_confirm":
             it = b.store.get(p.get("id", ""))
             self.pending = None
@@ -2010,6 +2088,9 @@ class Jarvis:
 
         if t.status == "stopped":
             return  # you stopped it, and were told so then
+        if self.board is not None:  # "what did I miss?" reads it back
+            self.board.store.note(f"Claude Code {'finished' if t.status == 'done' else 'stopped'} the task in "
+                                  f"{re.sub(r'[-_]+', ' ', t.name)}")
         spoken = cc.report(t, spoken=True)
         card = {"kind": "project", "name": t.name, "title": "Task finished" if t.status == "done" else "Task ended",
                 "ago": "just now", "summary": spoken, "last_prompt": t.task,
@@ -2036,9 +2117,20 @@ class Jarvis:
         if edited:
             to, subject, body = edited.get("to") or to, edited.get("subject") or subject, edited.get("body") or body
         self._set_state("acting", icon="mail")
+        later = bool(p.get("at")) and p["at"] > time.time() + 30 and self.board is not None
         try:
             if (to, subject, body) != (p["to"], p["subject"], p["body"]):
                 await asyncio.to_thread(CTX.gmail.update_draft, p["draft_id"], to, subject, body)
+            if later:  # "email Sara at 3 PM": the confirmed draft waits in Gmail; the board sends it then
+                from .services.briefing import _when_words
+
+                self.board.schedule_email(p, p["at"], to, subject)
+                self.ui.send({"type": "card", "kind": "clear"})
+                self.player.play(earcons.DONE)
+                name = p.get("to_name", to).split()[0]
+                await self.say(f"Scheduled. I'll send it to {name} {_when_words(p['at'])} and tick it off on the "
+                               "board.", then_idle=True)
+                return
             await asyncio.to_thread(CTX.gmail.send_draft, p["draft_id"])
         except Exception as e:
             log.exception("send failed")
