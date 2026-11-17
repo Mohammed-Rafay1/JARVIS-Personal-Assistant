@@ -111,3 +111,33 @@ def test_front_words_for_tools():
     assert words_for("open_website", {"site": "youtube"}) == (["youtube"], True)
     assert words_for("open_folder", {"name": "downloads"}) == (["downloads"], False)
     assert words_for("close_app", {"name": "x"}) is None
+
+
+def test_made_up_actions_are_caught():
+    from jarvis.app import _FALSE_ACTION
+    for said in ('Got it, sir. I\'ll open the "work" MSWord file from your Downloads folder.',
+                 "I apologize for that oversight, sir. Let me check and ensure Spotify is closed.",
+                 "I'll close it for you now.", 'Understood, sir. I\'ll open the "to work" file in Microsoft Word for you now.'):
+        assert _FALSE_ACTION.search(said), said
+    for said in ("Paris is the capital of France.", "You can open it from the Start menu.", "I'd start with Python."):
+        assert not _FALSE_ACTION.search(said), said
+
+
+def test_open_a_named_file_in_one_breath():
+    from jarvis.brain.intents import parse
+    i = parse("Jarvis, there is a microsoft world file in my laptop named to work. Please open that.")
+    assert (i.tool, i.args.get("app"), i.args.get("query")) == ("office_open", "word", "to work")
+    i = parse("I'm saying there is a file in my Downloads folder. The name of the file is work. "
+              "You have to open that MSWord file for me.")
+    assert (i.tool, i.args.get("app"), i.args.get("query")) == ("office_open", "word", "work")
+
+
+def test_draft_reply_phrases():
+    from jarvis.app import _DRAFT_REPLY, _YES_LEAD
+    for said in ("yes please make a drop for their email", "make a drop for that email",
+                 "i mean the email that needs a reply i want you to make a draft reply for that email",
+                 "make a draft and i'll check the draft and then tell you", "reply to it",
+                 "make a drop trip life for my email that needs my reply"):
+        assert _DRAFT_REPLY.search(said), said
+    assert _YES_LEAD.match("yes please make a drop for their email")
+    assert not _DRAFT_REPLY.search("open spotify")

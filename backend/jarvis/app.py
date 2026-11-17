@@ -102,6 +102,12 @@ _THANKS = re.compile(r"(?:(?:that's|thats|that is|it's|its|so|very|really|just)\
                      r"perfect|brilliant|excellent|wow|love it|good job|well done|thanks|thank you|thank you so much|"
                      r"thanks a lot|cheers)(?:\s+(?:jarvis|sir|man|buddy|mate))?")
 # "The task ... has been added to your planner": the language model claiming a change it can't make
+_FALSE_ACTION = re.compile(
+    r"\b(?:i'?ll|i will|let me|i'?m going to|i am going to|i'?m now|i'?m)\s+(?:now\s+|just\s+|go ahead and\s+|"
+    r"check and\s+(?:ensure|make sure)?\s*\w*\s*)?(?:open|opening|close|closing|launch|launching|start|starting|play|"
+    r"playing|send|sending|bring|bringing|pull|pulling|delete|deleting|switch|switching)\b|"
+    r"\b(?:opening|closing|launching) (?:it|that|the|your)\b.*\b(?:now|for you)\b|"
+    r"\blet me (?:check and )?(?:ensure|make sure) .{0,40}\b(?:is|are) (?:closed|open|opened|running|playing)\b", re.I)
 _FALSE_ADD = re.compile(r"\b(?:(?:has|have) been|i(?:'ve| have| just)?|i'll|i will)\s+(?:added|scheduled|saved|noted|"
                         r"put|placed|add|schedule|note)\b.*\b(?:your |the |my )?(?:to ?do(?: list)?|list|planner|board|"
                         r"mission|reminders?|calendar)\b", re.I)
@@ -142,6 +148,11 @@ def _tidy_spoken(sentence: str) -> str:
 # A short greeting and a word or two: likely "Hey Jarvis" that the fast pass garbled ("Hey, did we see you?",
 # "Edge, Database," on the headset, 17 Nov). Worth a second, careful listen.
 _MAYBE_WAKE = re.compile(r"^\W*(?:hey|hi|hay|edge|hate|age|eh|aye|a|okay|ok|yo)\b[\s,.!?]+(?:\S+\s*){1,4}$", re.I)
+_YES_LEAD = re.compile(r"^(?:yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|of course|absolutely)\b")
+# "make a draft (reply) for that email", "make a drop for their email" (draft heard as drop), "reply to it"
+_DRAFT_REPLY = re.compile(r"\b(?:make|write|prepare|create|do|draft|give me)\s+(?:a |the |me a )?(?:draft|drop|reply|"
+                          r"response|answer)(?: reply)?\b(?! email to)|\b(?:reply|respond|answer) (?:to )?(?:it|that|"
+                          r"this|them|the email|that email|their email)\b|\bdraft (?:it|that|a reply)\b")
 _SHOW_IT = re.compile(r"\b(?:in|into|to|on) the background\b|\bbehind (?:the |my |other )?(?:windows?|screen)\b|"
                       r"\b(?:show|bring|put|pull) (?:it|that|this|them|(?:the |my )?\w+(?: page| window| app)?) "
                       r"(?:up |back )?(?:on|to|onto|in front of|forward)(?: (?:my|the) (?:screen|front))?\b|"
@@ -208,6 +219,7 @@ class Jarvis:
         self._head = ""               # the commit Jarvis started on; a newer one is an update to offer
         self._offered_head = ""
         self._last_opened: tuple[list[str], bool] | None = None   # "show it on my screen" brings this back
+        self._reply_msgs: tuple[list, float] | None = None         # the emails waiting for a reply, last listed
         self.last_heard = 0.0         # when you last said or typed something (Jarvis doesn't speak up over you)
         # up to five exchanges (trimmed in _chat): enough to hold a conversation, quick on this CPU
         self.history: deque[dict] = deque()
@@ -262,6 +274,8 @@ class Jarvis:
     def pending(self, value: dict | None) -> None:
         self._pending = value
         self._pending_at = time.monotonic()
+        if value and value.get("kind") == "reply_list":  # "make a draft for that email" a minute later
+            self._reply_msgs = (value["messages"], time.monotonic())
         if value and value.get("cwd") and value.get("kind") in ("claude_task_offer", "claude_task", "claude_send"):
             # the project we're talking about: "give prompt there", "do it yourself in my Claude" mean this one
             self._cc_here = {"cwd": value["cwd"], "name": value["name"], "session": value.get("session", ""),
@@ -1029,6 +1043,25 @@ class Jarvis:
                 r"(?:install|load|apply) (?:the |your |my )?(?:new )?update", t):
             await self._restart_answer("yes")
             return
+        # "make a draft reply for that email" after the question about it has passed (17 Nov: asked five times)
+        rm = self._reply_msgs
+        if rm and time.monotonic() - rm[1] < 1800 and len(rm[0]) == 1 and _DRAFT_REPLY.search(t) \
+                and not re.search(r"\b(?:to|for) (?!(?:that|the|this|their|his|her|it|my)\b)\w+ (?:about|saying)\b", t):
+            from .tools.gmail import start_reply
+
+            self.pending = None
+            self._set_state("acting", icon="mail")
+            await self._deliver([await start_reply(rm[0][0])])
+            return
+        # "you opened YouTube in the background, I want to see it on my screen" (17 Nov, it went to the chat
+        # model, which invented a system-tray menu): bring what was opened last to the front
+        if self._last_opened and len(t.split()) <= 25 and _SHOW_IT.search(t):
+            from .tools.front import surface
+
+            ok = await asyncio.to_thread(surface, *self._last_opened, 3.0)
+            await self.say("There you go, sir." if ok else "I couldn't bring it forward, sir. Windows refused.",
+                           then_idle=True)
+            return
         whole = parse(t, self.cfg["music"]["default_service"], self._resolve_open)
         job = self._timed_job(t, whole)
         if job is not None:
@@ -1554,7 +1587,8 @@ class Jarvis:
             if hit is not None:
                 await self._choose(hit + 1)
                 return True
-            if YES.match(t) and len(msgs) == 1:
+            if len(msgs) == 1 and (YES.match(t) or _YES_LEAD.match(t) or _DRAFT_REPLY.search(t)):
+                # "Yes, please make a drop for their email" (17 Nov: "drop" = draft) was taken as something else
                 await self._choose(1)
                 return True
         if kind == "choose_file" and parse_choice(t) is None:  # "flyer data.rar is in Downloads. Open it?"
@@ -2071,7 +2105,10 @@ class Jarvis:
                 cur = await asyncio.to_thread(head_commit, ROOT)
                 if not cur or not self._head or cur in (self._head, self._offered_head):
                     continue
-                free = (not self.in_call and self.state == "idle" and self._remote_said is None
+                # idle, or in a call between your sentences (17 Nov: a long call held the offer back for good)
+                quiet = (self.state == "idle" and not self.in_call) or \
+                    (self.in_call and self.state == "listening" and not self.endpointer.started)
+                free = (quiet and self._remote_said is None and not self.muted
                         and (self.task is None or self.task.done()) and self.pending is None)
                 if not free or self.restart_cb is None:
                     continue
@@ -2544,6 +2581,14 @@ class Jarvis:
                         if not m:
                             break
                         sentence, buf = _tidy_spoken(m.group(1)), buf[m.end():]
+                        if not tool_results and _FALSE_ACTION.search(sentence):
+                            # 17 Nov: "I'll open the work MSWord file... Just a moment", "Let me check and ensure
+                            # Spotify is closed": promised, never done. Say so instead.
+                            log.info("replaced a made-up action: %r", sentence)
+                            sentence = (f"I haven't done that, {self.cfg['address_as']}: I didn't catch it as a "
+                                        "command. Say it short, like: open work word file.")
+                            if sentence in spoken:
+                                continue
                         if _FALSE_ADD.search(sentence):  # the model can't change the list: never claim it did
                             log.info("replaced a made-up claim: %r", sentence)
                             sentence = ("I can't change the list from a chat, but you can: say add, then the "

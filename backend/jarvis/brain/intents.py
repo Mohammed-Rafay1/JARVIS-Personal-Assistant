@@ -56,6 +56,33 @@ def normalize(text: str) -> str:
     t = re.sub(r"^clothes?(?= (?:the |my |this |that )?(?:board|dashboard|overview|hud)\b)", "close", t)
     # "Slows, Downloads." for "Close Downloads" on the headset (17 Nov): "close" heard as "slows"/"clothes"
     t = re.sub(r"^(?:slows|clothes|clothe|closes?e)\b(?= \S)", "close", t)
+    # "there is a microsoft world file in my laptop named to work please open that" (17 Nov, went to the chat
+    # model, which only pretended): said as "open to work word file", which opens it in Word
+    _kind = r"(?:microsoft )?(word|world|excel|powerpoint|power point) (?:file|document|doc|sheet|spreadsheet|presentation)"
+    _where = r"(?: (?:in|on) (?:my|the|this) (?:laptop|computer|pc|system|desktop))?"
+    _named = r" (?:named|called|titled|with the name|by the name(?: of)?) "
+    m = re.match(rf"^(?:there is|there's|i have|i've got) (?:a |an )?{_kind}{_where}{_named}(.+?)"
+                 rf"(?: (?:please |can you |could you |just )?(?:open|show|launch) (?:it|that|this)(?: one)?)$", t) \
+        or re.match(rf"^(?:open|show|launch) (?:the |my |a |that )?{_kind}{_where}{_named}(.+)$", t)
+    if m:
+        app = {"world": "word", "power point": "powerpoint"}.get(m.group(1), m.group(1))
+        t = f"open {m.group(2).strip()} {app} file"
+    else:
+        m = re.match(rf"^(?:there is|there's|i have) (?:a |an )?(?:file|folder|document){_where}{_named}(.+?) "
+                     r"(?:please |can you |could you |just )?open (?:it|that|this)$", t)
+        if m:
+            t = f"open {m.group(1).strip()}"
+    # any longer way of saying it: "there is a file in my downloads folder the name of the file is work you have
+    # to open that msword file" (17 Nov): a file name and "open" in one breath
+    if len(t.split()) <= 40 and re.search(r"\bopen\b", t) and not t.startswith("open "):
+        m = re.search(r"\b(?:(?:the )?name of (?:the|that|this) (?:file|document|doc|sheet) is|"
+                      r"(?:file|document|doc|sheet|presentation) (?:is )?(?:named|called|titled))"
+                      r" (.+?)(?= you\b| please\b| can you\b| could you\b| and\b| so\b| open\b|$)", t)
+        if m:
+            name = re.sub(r"^(?:the |a )", "", m.group(1).strip())
+            app = re.search(r"\b(?:ms ?)?(word|world|excel|powerpoint|power point)\b", t)
+            app = {"world": "word", "power point": "powerpoint"}.get(app.group(1), app.group(1)) if app else ""
+            t = f"open {name} {app} file" if app else f"open {name}"
     # "open downloads folder from my laptop": where it is goes without saying
     t = re.sub(r"\s+(?:from|on|in|of) (?:my|the|this) (?:laptop|computer|pc|system|machine|device)$", "", t)
     t = re.sub(r"^playing\b(?=.+\bon (?:spotify|youtube)$)", "play", t)
