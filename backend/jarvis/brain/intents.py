@@ -83,6 +83,8 @@ def normalize(text: str) -> str:
             app = re.search(r"\b(?:ms ?)?(word|world|excel|powerpoint|power point)\b", t)
             app = {"world": "word", "power point": "powerpoint"}.get(app.group(1), app.group(1)) if app else ""
             t = f"open {name} {app} file" if app else f"open {name}"
+    # "Open while LinkedIn." (17 Nov): a stray filler word between the verb and the name
+    t = re.sub(r"^(open|close|launch|play) (?:while|well|uh|um|ah|er|the uh|like) ", r"\1 ", t)
     # "open downloads folder from my laptop": where it is goes without saying
     t = re.sub(r"\s+(?:from|on|in|of) (?:my|the|this) (?:laptop|computer|pc|system|machine|device)$", "", t)
     t = re.sub(r"^playing\b(?=.+\bon (?:spotify|youtube)$)", "play", t)
