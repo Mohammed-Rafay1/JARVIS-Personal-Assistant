@@ -196,6 +196,9 @@ class Jarvis:
         self._last_question = ""      # the last question the language model answered ("search it" looks it up)
         self.remote = None            # the WhatsApp link, once started (reports finished Claude Code tasks)
         self.board = None             # today's plan, inbox and projects on one screen (services/briefing.py)
+        self.restart_cb = None        # set by __main__: restart into a new version (the supervisor brings it back)
+        self._head = ""               # the commit Jarvis started on; a newer one is an update to offer
+        self._offered_head = ""
         self.last_heard = 0.0         # when you last said or typed something (Jarvis doesn't speak up over you)
         # up to five exchanges (trimmed in _chat): enough to hold a conversation, quick on this CPU
         self.history: deque[dict] = deque()
@@ -335,6 +338,7 @@ class Jarvis:
 
         m = c.get("mic", {})
         self.mic = Mic(float(m.get("gain", 1.0)), DATA / "voice" / "mic_levels.json", bool(m.get("auto_level", True)))
+        self.mic.before_switch = self.player.release   # headset plugged in: voice moves to it too
         self.mic.start()
         health["mic"] = "on"
         self._load_voiceprint(health)
@@ -433,6 +437,7 @@ class Jarvis:
 
         self.board = Board(self)
         asyncio.create_task(self.board.run())  # reminders, focus timer, morning briefing, evening wrap-up
+        asyncio.create_task(self._watch_updates())
         self.mode = "wake"
         self._set_state("idle")
         self._status("Ready", ready=True, health=health)
@@ -1002,6 +1007,13 @@ class Jarvis:
             handled = await self._handle_pending(t, text)
             if handled:
                 return
+        # "restart" after saying "not now" to an update (only while one is waiting: "restart the computer" is
+        # something else)
+        if self._offered_head and self.restart_cb is not None and re.fullmatch(
+                r"(?:restart|reload|update)(?: yourself| jarvis| now| with the (?:new )?update| for the update)?|"
+                r"(?:install|load|apply) (?:the |your |my )?(?:new )?update", t):
+            await self._restart_answer("yes")
+            return
         whole = parse(t, self.cfg["music"]["default_service"], self._resolve_open)
         job = self._timed_job(t, whole)
         if job is not None:
@@ -1260,6 +1272,8 @@ class Jarvis:
         if kind in ("plan_today", "board_start", "board_guided", "todo_confirm", "board_walk", "job_now") \
                 and self.board is not None:
             return await self._board_pending(p, t, raw)
+        if kind == "restart_update":
+            return await self._restart_answer(t)
         if kind == "song_query":  # answer to "Which song should I play?"
             self.pending = None
             if NO.match(t):
@@ -2017,6 +2031,52 @@ class Jarvis:
         self.speak_aloud = True
         self.player.play(earcons.NOTIFY)
         await self.say(line, then_idle=True)
+
+    # ------------------------------------------------------------------ updates
+    async def _watch_updates(self) -> None:
+        """A new commit on this checkout is a new version of Jarvis: when it's quiet, say so and offer to
+        restart into it. Asked once per version; a "no" waits for the next one."""
+        from .config import ROOT
+        from .services.updater import commit_subject, head_commit, spoken_subject
+
+        self._head = await asyncio.to_thread(head_commit, ROOT)
+        log.info("running version %s", self._head[:7] or "unknown")
+        while True:
+            await asyncio.sleep(20)
+            try:
+                cur = await asyncio.to_thread(head_commit, ROOT)
+                if not cur or not self._head or cur in (self._head, self._offered_head):
+                    continue
+                free = (not self.in_call and self.state == "idle" and self._remote_said is None
+                        and (self.task is None or self.task.done()) and self.pending is None)
+                if not free or self.restart_cb is None:
+                    continue
+                self._offered_head = cur
+                what = spoken_subject(await asyncio.to_thread(commit_subject, ROOT, cur))
+                sir = self.board.sir if self.board is not None else "sir"
+                log.info("update ready: %s %s", cur[:7], what)
+                self.pending = {"kind": "restart_update", "commit": cur}
+                self.speak_aloud = True
+                self.player.play(earcons.NOTIFY)
+                self.ui.send({"type": "notify", "kind": "board", "from": "Jarvis",
+                              "subject": f"Update ready: {what}" if what else "Update ready"})
+                await self.say(f"{sir.capitalize()}, my new update is ready" + (f": {what}." if what else ".")
+                               + " Should I restart?", then_idle=False, follow=True)
+            except Exception:
+                log.exception("update check")
+
+    async def _restart_answer(self, t: str) -> bool:
+        self.pending = None
+        if YES.match(t) or re.search(r"\b(?:restart|go ahead|do it|sure|okay|ok)\b", t):
+            await self.say("Restarting now. I'll be back in a few seconds.", then_idle=False)
+            log.info("restarting for the update")
+            self.restart_cb()
+            return True
+        if NO.match(t) or _NOT_NOW.search(t) or re.search(r"\b(?:later|not now|wait)\b", t):
+            await self.say("Alright. Say \"restart\" whenever you're ready, or it'll load next time I start.",
+                           then_idle=True)
+            return True
+        return False  # something else: handle it as a normal command
 
     def settle(self) -> None:
         """A background board task finished: the orb shouldn't stay on "working" if nothing else is."""

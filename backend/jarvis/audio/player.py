@@ -95,6 +95,19 @@ class Player:
     def wait(self, timeout: float | None = None) -> bool:
         return self._idle.wait(timeout)
 
+    def release(self) -> bool:
+        """Close the output so the next sound opens on the current default device (headphones plugged in or
+        out). False while something is playing: the switch waits rather than cut Jarvis off mid-sentence."""
+        if not self._idle.is_set():
+            return False
+        s, self._stream = self._stream, None
+        try:
+            if s is not None:
+                s.close()
+        except Exception:
+            pass
+        return True
+
     @property
     def busy(self) -> bool:
         try:

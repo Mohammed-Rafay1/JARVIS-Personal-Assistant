@@ -1,0 +1,80 @@
+"""A new commit is offered as an update: "my new update is ready, should I restart?" (17 Nov)."""
+import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+
+from jarvis.services import updater  # noqa: E402
+
+A = "a" * 40
+B = "b" * 40
+
+
+def _repo(tmp_path, commit=A, packed=False):
+    g = tmp_path / ".git"
+    (g / "refs" / "heads").mkdir(parents=True)
+    (g / "logs").mkdir()
+    (g / "HEAD").write_text("ref: refs/heads/rafay\n", encoding="utf-8")
+    if packed:
+        (g / "packed-refs").write_text(f"# pack-refs\n{commit} refs/heads/rafay\n", encoding="utf-8")
+    else:
+        (g / "refs" / "heads" / "rafay").write_text(commit + "\n", encoding="utf-8")
+    (g / "logs" / "HEAD").write_text(
+        f"{'0' * 40} {A} Me <m@x> 1 +0500\tcommit: First\n"
+        f"{A} {B} Me <m@x> 2 +0500\tcommit: \"Close board\" closes it, however it's heard\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_head_commit_from_branch_file_and_packed_refs(tmp_path):
+    assert updater.head_commit(_repo(tmp_path)) == A
+    assert updater.head_commit(_repo(tmp_path / "p", B, packed=True)) == B
+    assert updater.head_commit(tmp_path / "nothing") == ""
+
+
+def test_commit_subject_is_speakable(tmp_path):
+    root = _repo(tmp_path)
+    s = updater.commit_subject(root, B)
+    assert s == "\"Close board\" closes it, however it's heard"
+    assert updater.spoken_subject(s) == "Close board closes it, however it's heard"
+    assert updater.commit_subject(root, "c" * 40) == ""
+
+
+class _J:
+    """Just enough of Jarvis for the restart answer."""
+    def __init__(self):
+        from jarvis.app import Jarvis
+        self.said, self.restarted = [], 0
+        self._pending, self._pending_at = {"kind": "restart_update"}, 0.0
+        self.restart_cb = lambda: setattr(self, "restarted", self.restarted + 1)
+        self._restart_answer = Jarvis._restart_answer.__get__(self)
+
+    pending = property(lambda s: s._pending, lambda s, v: setattr(s, "_pending", v))
+
+    async def say(self, text, then_idle=True, follow=False):
+        self.said.append(text)
+
+
+def test_yes_restarts_and_no_waits():
+    j = _J()
+    assert asyncio.run(j._restart_answer("yes")) and j.restarted == 1 and j.pending is None
+    j = _J()
+    assert asyncio.run(j._restart_answer("not now")) and j.restarted == 0 and "restart" in j.said[0].lower()
+    j = _J()
+    assert asyncio.run(j._restart_answer("open spotify")) is False and j.restarted == 0  # a new command instead
+
+
+def test_player_release_waits_while_speaking():
+    from jarvis.audio.player import Player
+    p = Player(lambda *a: None)
+    assert p.release() is True            # idle: the output can move to the headset now
+    p._idle.clear()
+    assert p.release() is False           # mid-sentence: the switch waits
+
+
+def test_default_devices_reads_windows_names():
+    import comtypes
+    from jarvis.audio.mic import default_devices
+    comtypes.CoInitialize()
+    names = default_devices()
+    assert names is None or (isinstance(names[0], str) and isinstance(names[1], str))

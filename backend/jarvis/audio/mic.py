@@ -77,6 +77,21 @@ class AutoGain:
         return self.gain
 
 
+def default_devices() -> tuple[str, str] | None:
+    """Windows' default recording and playback devices by name (they change when a headset is plugged in).
+    None when they can't be read; the caller's thread must have COM initialised."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+
+        mic = AudioUtilities.CreateDevice(AudioUtilities.GetMicrophone()).FriendlyName
+        out = AudioUtilities.GetSpeakers()
+        out = getattr(out, "FriendlyName", None) or AudioUtilities.CreateDevice(out).FriendlyName
+        return str(mic or ""), str(out or "")
+    except Exception as e:
+        log.debug("default audio devices unreadable: %s", e)
+        return None
+
+
 class Mic:
     """Delivers int16 frames of FRAME samples to `frames`. Reopens itself if the device disappears."""
 
@@ -96,6 +111,11 @@ class Mic:
         self._stop = threading.Event()
         self._last_frame = 0.0
         self._watchdog: threading.Thread | None = None
+        # The app sets this to the player's release(): when Windows switches devices (a headset plugged in),
+        # the output has to let go before PortAudio is re-initialised. False = busy, try again shortly.
+        self.before_switch = None
+        self._defaults: tuple[str, str] | None = None   # Windows' default (input, output) names
+        self._checked = 0.0
 
     def _callback(self, indata, _frames, _time, status) -> None:
         if status and status.input_overflow:
@@ -149,25 +169,50 @@ class Mic:
             log.debug("couldn't save mic level: %s", e)
 
     def _watch(self) -> None:
-        # survives headset unplug / sleep-resume: if frames stop for 3 s, reopen the default device
+        # survives headset unplug / sleep-resume: if frames stop for 3 s, reopen the default device. And
+        # follows Windows' default devices: plugging in headphones switches Jarvis to their mic and earpieces
+        # (the laptop mic kept working, so the stall check alone never moved it, 17 Nov).
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
         while not self._stop.wait(1.0):
             if self.agc is not None:
                 self._remember()
+            if time.monotonic() - self._checked >= 2.0:
+                self._checked = time.monotonic()
+                names = default_devices()
+                if names and self._defaults is None:
+                    self._defaults = names
+                elif names and names != self._defaults:
+                    if self.before_switch is not None and not self.before_switch():
+                        continue  # Jarvis is speaking; switch when it's done
+                    log.info("audio devices changed: input %r, output %r (was %r, %r)",
+                             names[0], names[1], *self._defaults)
+                    self._defaults = names
+                    self._reopen()
+                    continue
             if time.monotonic() - self._last_frame < 3.0:
                 continue
             log.warning("mic stalled, reopening")
-            try:
-                if self._stream:
-                    self._stream.close()
-            except Exception:
-                pass
-            try:
-                sd._terminate()
-                sd._initialize()
-                self._open()
-            except Exception as e:
-                log.error("mic reopen failed: %s", e)
-                self._last_frame = time.monotonic()  # retry in 3 s
+            if self.before_switch is not None:
+                self.before_switch()
+            self._reopen()
+
+    def _reopen(self) -> None:
+        try:
+            if self._stream:
+                self._stream.close()
+        except Exception:
+            pass
+        try:
+            sd._terminate()
+            sd._initialize()
+            self._open()
+        except Exception as e:
+            log.error("mic reopen failed: %s", e)
+            self._last_frame = time.monotonic()  # retry in 3 s
 
     def stop(self) -> None:
         self._stop.set()

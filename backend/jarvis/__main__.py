@@ -19,6 +19,7 @@ from .priority import boost_priority
 
 log = logging.getLogger("jarvis")
 _EXIT = {"code": 0}
+RESTART = 75   # the worker asks the supervisor to start it again (a new version is ready)
 ELECTRON = ROOT / "ui" / "node_modules" / "electron" / "dist" / "electron.exe"
 
 
@@ -57,11 +58,24 @@ async def _run(cfg: dict, with_ui: bool, port: int = 0, token: str = "") -> None
     ui = _spawn_ui(port, token, cfg["hotkey"]) if with_ui else None
     jarvis = Jarvis(cfg, bridge)
 
+    def restart() -> None:
+        """Quit with RESTART: the supervisor starts a fresh worker (and overlay) on the new code."""
+        _EXIT["code"] = RESTART
+        if jarvis.ducker:
+            jarvis.ducker.restore()
+        if ui is not None and ui.poll() is None:
+            ui.terminate()
+        asyncio.get_running_loop().stop()
+
+    jarvis.restart_cb = restart if with_ui else None
+
     async def watch_ui() -> None:
         while ui is not None:
             await asyncio.sleep(1)
             code = ui.poll()
             if code is not None:
+                if _EXIT["code"] == RESTART:
+                    return
                 # 0 = user quit from the tray; anything else is a crash the supervisor should recover from
                 log.info("overlay exited (code %s); shutting down", code)
                 _EXIT["code"] = 0 if code == 0 else 3
@@ -148,6 +162,9 @@ def _supervise(argv: list[str]) -> int:
         code = subprocess.call([sys.executable, "-m", "jarvis", "--worker", *argv])
         if code == 0:
             return 0
+        if code == RESTART:
+            log.info("restarting for an update")
+            continue
         now = time.monotonic()
         crashes = [t for t in crashes if now - t < 600] + [now]
         log.error("backend exited with code %s (crash %d in 10 min)", code, len(crashes))
