@@ -566,6 +566,12 @@ async def compose_reply(m: dict, instruction: str) -> str:
     """Write the reply body from the user's spoken instruction (their words if the LLM is unavailable)."""
     sig = CTX.cfg.get("email", {}).get("signature", "")
     first = (m.get("from_name") or "").split()[0] if m.get("from_name") else ""
+    # "reply that email on your own", "reply relevant email to them" (17 Nov): Jarvis decides what to say
+    if re.search(r"\b(?:on your own|yourself|you decide|your call|relevant|suitable|appropriate|proper|whatever|"
+                 r"something (?:good|nice|polite|professional)|accordingly|as you (?:see fit|like|think))\b",
+                 instruction.lower()) and len(instruction.split()) <= 14:
+        instruction = ("Write the reply the user would most sensibly send to this email: polite, professional and "
+                       "fitting what the email says (for a rejection, thank them and ask to be kept in mind).")
     if CTX.llm and await CTX.llm.available():
         try:
             original = await asyncio.to_thread(CTX.gmail.body, m["id"])
