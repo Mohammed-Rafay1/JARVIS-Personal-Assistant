@@ -41,6 +41,8 @@ listening:
   follow_up_seconds: 6       # after Jarvis asks you something (send it? which file?), answer without the wake word
   follow_up_after_chat: false # also keep listening when a chat answer ends in a question (noisy rooms: keep off)
   vad_aggressiveness: 2      # 0-3, higher ignores more background noise
+  backchannel: true          # a soft "hmm" / "uh-huh" in the pauses of a longer sentence, like someone listening
+  backchannel_volume: 0.35   # how loud that is, compared with Jarvis's normal voice
 
 call:                        # "Hey Jarvis" opens a full-screen call that keeps listening
   first_timeout: 8           # end quietly if nothing is said right after waking (accidental wake)
@@ -50,6 +52,8 @@ call:                        # "Hey Jarvis" opens a full-screen call that keeps 
   barge_in: true             # start talking while Jarvis speaks and it stops to listen
   barge_in_ratio: 2.5        # how much louder than Jarvis's own echo your voice must be (raise if it interrupts itself)
   rethink_min_rms: 1800      # how loud speech must be to interrupt Jarvis while it's thinking (raise if other voices interrupt it)
+  think_aloud: true          # "Hmm, let me think." when something takes a few seconds; "still on it" if longer.
+                             # "How long?" while it works gets an answer and the work carries on
 
 stt:
   model: base.en             # fast first pass
