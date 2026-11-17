@@ -143,6 +143,40 @@ body.leave { animation: leave .2s ease forwards; }
 .empty { text-align: center; color: var(--dim); padding: 30px 16px; }
 .empty-ico { width: 46px; height: 46px; color: var(--c); opacity: .7; margin-bottom: 10px; }
 
+/* ---------------------------------------------------------------- replies Jarvis drafted */
+.rh { display: flex; justify-content: space-between; align-items: center; margin: 6px 2px 6px; padding-bottom: 4px;
+  font: 600 11px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--c);
+  border-bottom: 1px solid var(--edge-soft); }
+.rh .rc { color: var(--warn); letter-spacing: .08em; }
+.reply { position: relative; margin: 0 0 10px; padding: 10px 12px; background: rgba(0, 229, 255, .04);
+  border: 1px solid var(--edge-soft); border-left: 2px solid var(--warn); }
+.reply.sent { border-left-color: var(--ok); opacity: .7; }
+.reply.failed { border-left-color: var(--bad); }
+.reply .rtop { display: grid; grid-template-columns: 34px 1fr auto; gap: 0 10px; align-items: center; }
+.reply .rtop .avatar { grid-row: auto; }
+.reply .from { font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reply .subj { color: var(--dim); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reply .when { font: 11px var(--mono); color: var(--faint); }
+.reply .preview { margin: 8px 0 0; color: var(--dim); font-size: 12px; line-height: 1.45; display: -webkit-box;
+  -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.reply .preview b, .reply .rlabel { font: 600 10px var(--mono); letter-spacing: .14em; color: var(--faint); margin-right: 6px; }
+.reply .rlabel { display: block; margin: 10px 0 4px; color: var(--c); }
+.reply textarea.draft { width: 100%; box-sizing: border-box; resize: vertical; min-height: 92px; padding: 8px 10px;
+  background: rgba(2, 12, 22, .85); color: var(--text); border: 1px solid var(--edge); font: 13px/1.5 var(--font);
+  outline: none; }
+.reply textarea.draft:focus { border-color: var(--c); box-shadow: 0 0 0 1px rgba(0, 229, 255, .25); }
+.reply .ractions { display: flex; gap: 8px; margin-top: 8px; }
+.reply .btn.send { color: #021018; background: var(--c); border-color: var(--c); font-weight: 700; padding: 5px 18px; }
+.reply .btn.send:hover { box-shadow: 0 0 12px rgba(0, 229, 255, .6); background: var(--c); }
+.reply .btn.ghost { margin-left: auto; color: var(--faint); background: none; }
+.reply .drafting, .reply .sentnote, .reply .warnnote { margin-top: 10px; font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+.reply .drafting { color: var(--c); }
+.reply .sentnote { color: var(--ok); font-weight: 600; }
+.reply .warnnote { color: var(--warn); }
+.spin { width: 12px; height: 12px; border: 2px solid rgba(0, 229, 255, .25); border-top-color: var(--c); border-radius: 50%;
+  animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* ---------------------------------------------------------------- inbox */
 .mail { display: grid; grid-template-columns: 34px 1fr auto; gap: 1px 12px; align-items: center; padding: 8px 10px 8px 12px;
   cursor: pointer; position: relative; border-bottom: 1px solid rgba(0, 229, 255, .06); transition: background .12s; }

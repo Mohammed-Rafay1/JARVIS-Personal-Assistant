@@ -196,7 +196,7 @@ _PENDING_TTL = {"send_email": 900, "wa_send": 900, "claude_send": 600, "email_li
                 "office_mode": 300, "office_file": 300, "office_pick": 300, "office_name": 600, "office_close": 300,
                 # the morning question stays open for hours: you might answer from your phone at lunch
                 "plan_today": 4 * 3600, "board_start": 1800, "board_guided": 1800, "todo_confirm": 300,
-                "board_walk": 600}
+                "board_walk": 600, "reply_board": 600}
 # answers to Jarvis's own question that still count as a new command when they parse as one
 _WEAK = ("open_any", "open_file", "find_file")
 # "change it to ...", "ask it to ...": a reworded task, not a new command
@@ -1280,6 +1280,13 @@ class Jarvis:
             result = Result(f"That didn't work: {str(e)[:80]}.", ok=False)
         if name in ("play_spotify", "play_youtube", "play_spotify_liked"):  # "start it" means this one
             self._last_play = {"tool": name, "args": dict(args), "ok": result.ok, "at": time.monotonic()}
+        if name in ("check_email", "emails_to_reply") and result.ok and self.board is not None \
+                and self.board.enabled and self._remote_said is None:
+            # asked about your emails: the board, with a drafted reply to each one waiting for yours (17 Nov)
+            try:
+                result = await self.board.email_desk(result, name)
+            except Exception:
+                log.exception("email desk")
         if result.ok and name in _OPENS_WINDOW and self._remote_said is None:
             # whatever was opened goes in front, never behind your window (17 Nov: "it should show on my
             # screen, no background")
@@ -1341,6 +1348,8 @@ class Jarvis:
             return await self._board_pending(p, t, raw)
         if kind == "restart_update":
             return await self._restart_answer(t)
+        if kind == "reply_board" and self.board is not None:
+            return await self.board.replies.answer(t, raw)
         if kind == "song_query":  # answer to "Which song should I play?"
             self.pending = None
             if NO.match(t):
@@ -2100,6 +2109,14 @@ class Jarvis:
         self.player.play(earcons.NOTIFY)
         await self.say(line, then_idle=True)
 
+    def is_quiet(self) -> bool:
+        """Free to bring something up itself: idle, or in a call between your sentences (17 Nov: a long call
+        held questions back for good), with nothing else waiting for an answer."""
+        quiet = (self.state == "idle" and not self.in_call) or \
+            (self.in_call and self.state == "listening" and not self.endpointer.started)
+        return (quiet and self._remote_said is None and not self.muted
+                and (self.task is None or self.task.done()) and self.pending is None)
+
     # ------------------------------------------------------------------ updates
     async def _watch_updates(self) -> None:
         """A new commit on this checkout is a new version of Jarvis: when it's quiet, say so and offer to
@@ -2120,12 +2137,7 @@ class Jarvis:
                     self._offered_head = ""
                 if not cur or not self._head or cur in (self._head, self._offered_head):
                     continue
-                # idle, or in a call between your sentences (17 Nov: a long call held the offer back for good)
-                quiet = (self.state == "idle" and not self.in_call) or \
-                    (self.in_call and self.state == "listening" and not self.endpointer.started)
-                free = (quiet and self._remote_said is None and not self.muted
-                        and (self.task is None or self.task.done()) and self.pending is None)
-                if not free or self.restart_cb is None:
+                if not self.is_quiet() or self.restart_cb is None:
                     continue
                 self._offered_head, self._offered_at, self._declined = cur, time.monotonic(), False
                 what = spoken_subject(await asyncio.to_thread(commit_subject, ROOT, cur))
@@ -2251,7 +2263,8 @@ class Jarvis:
         await self.say(spoken, then_idle=True)
 
     async def _send_email(self, p: dict, edited: dict | None = None) -> None:
-        """The ONLY code path that sends email. Requires a pending draft the user confirmed."""
+        """Sends an email draft the user confirmed. (The board's drafted replies send through
+        services/replies.py ReplyDesk.send, likewise only on a click on Send or a "yes" to that one reply.)"""
         self.pending = None
         to, subject, body = p["to"], p["subject"], p["body"]
         if edited:

@@ -562,19 +562,23 @@ async def start_reply(m: dict) -> Result:
                   pending={"kind": "reply_text", "msg": m})
 
 
-async def compose_reply(m: dict, instruction: str) -> str:
+async def compose_reply(m: dict, instruction: str, original: str | None = None) -> str:
     """Write the reply body from the user's spoken instruction (their words if the LLM is unavailable)."""
     sig = CTX.cfg.get("email", {}).get("signature", "")
     first = (m.get("from_name") or "").split()[0] if m.get("from_name") else ""
     # "reply that email on your own", "reply relevant email to them" (17 Nov): Jarvis decides what to say
-    if re.search(r"\b(?:on your own|yourself|you decide|your call|relevant|suitable|appropriate|proper|whatever|"
-                 r"something (?:good|nice|polite|professional)|accordingly|as you (?:see fit|like|think))\b",
-                 instruction.lower()) and len(instruction.split()) <= 14:
+    auto = bool(re.search(r"\b(?:on your own|yourself|you decide|your call|relevant|suitable|appropriate|proper|"
+                          r"whatever|something (?:good|nice|polite|professional)|accordingly|"
+                          r"as you (?:see fit|like|think))\b", instruction.lower())) and len(instruction.split()) <= 14
+    if auto:
         instruction = ("Write the reply the user would most sensibly send to this email: polite, professional and "
-                       "fitting what the email says (for a rejection, thank them and ask to be kept in mind).")
+                       "answering what the email actually says or asks (for a rejection, thank them and ask to be kept "
+                       "in mind). Use only facts from the email. Where the user has to decide something (a date, a "
+                       "price, a yes or no), don't decide it: say they'll confirm shortly.")
     if CTX.llm and await CTX.llm.available():
         try:
-            original = await asyncio.to_thread(CTX.gmail.body, m["id"])
+            if original is None:
+                original = await asyncio.to_thread(CTX.gmail.body, m["id"])
             body = await CTX.llm.complete(
                 "Write the body of an email reply on the user's behalf. Follow their instruction exactly; do not "
                 "add facts, promises or dates they did not give. Greeting with the sender's first name, 1-4 short "
@@ -585,6 +589,9 @@ async def compose_reply(m: dict, instruction: str) -> str:
                 return body.strip() + (f"\n\n{sig}" if sig else "")
         except Exception as e:
             log.warning("reply compose failed: %s", e)
+    if auto:   # no language model: a short holding reply rather than the instruction itself
+        return (f"Hi {first},\n\n" if first else "Hi,\n\n") + "Thank you for your email. I'll get back to you shortly." \
+            + (f"\n\n{sig}" if sig else "")
     text = instruction.strip().rstrip(".") + "."
     return (f"Hi {first},\n\n" if first else "Hi,\n\n") + text[0].upper() + text[1:] + (f"\n\n{sig}" if sig else "")
 

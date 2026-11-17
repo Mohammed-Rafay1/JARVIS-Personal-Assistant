@@ -50,6 +50,9 @@ class Board:
         self._last_tick = 0.0
         self._locked_since = 0.0
         self._seen_saved = 0.0
+        from .replies import ReplyDesk
+
+        self.replies = ReplyDesk(self)          # drafted replies to the emails waiting for yours
 
     @property
     def sir(self) -> str:
@@ -113,6 +116,7 @@ class Board:
                        "when": _when_words(i["at"])[3:] if i.get("at") and i["status"] == "scheduled" else ""}
                       for i in day["items"]],
             "emails": emails, "projects": projects, "weather": weather,
+            "replies": self.replies.payload(),
             "reminders": [{"id": r["id"], "text": r["text"],
                            "at": dt.datetime.fromtimestamp(r["at"]).strftime("%I:%M %p").lstrip("0"),
                            "day": "" if dt.datetime.fromtimestamp(r["at"]).date() == now.date() else
@@ -245,6 +249,16 @@ class Board:
             from ..tools.gmail import summarise_message
 
             await self.j.board_say(await summarise_message(self._mail[msg["id"]]))
+        elif a == "reply_send" and msg.get("id"):   # your click on Send: that's the go-ahead for this one
+            said = await self.replies.send(msg["id"], msg.get("body"))
+            if said:
+                if (self.j.pending or {}).get("kind") == "reply_board" and self.j.pending.get("id") == msg["id"]:
+                    self.j.pending = None
+                await self.j.board_say(Result(said, icon="mail", ok=not said.startswith("Sending")))
+        elif a == "reply_redraft" and msg.get("id"):
+            await self.replies.redraft(msg["id"])
+        elif a == "reply_skip" and msg.get("id"):
+            self.replies.skip(msg["id"])
         elif a == "project" and msg.get("cwd"):
             await self.j.board_say(await self.j.run_tool("claude_project_status", {"project": msg["cwd"]}))
         elif a == "focus":
@@ -347,6 +361,29 @@ class Board:
         if left and with_list:
             parts.append(f"Still on your list: {B.listing(left, 3)}.")
         return " ".join(parts)
+
+    async def email_desk(self, r: Result, tool: str) -> Result:
+        """You asked about your emails: the board opens on the inbox, and each email waiting for your reply gets
+        a reply drafted from what it says, shown with a Send button. Jarvis asks before sending any of them."""
+        if CTX.gmail is None or not hasattr(CTX.gmail, "needs_reply"):
+            return r
+        self._cache.pop("needs_reply", None)
+        waiting = await self.needs_reply()
+        await self.show("emails", focus=True, fresh=True)
+        if not waiting:
+            if tool == "emails_to_reply":
+                return Result(f"You're all caught up, {self.sir}. Nothing is waiting for your reply; your inbox is on "
+                              "the board.", icon="mail")
+            return Result(f"{r.say} None of them need a reply.", icon="mail")
+        await self.replies.open(waiting)
+        n = len(waiting)
+        names = list(dict.fromkeys(m["from_name"] for m in waiting))   # names keep their capitals
+        who = names[0] if len(names) == 1 else ", ".join(names[:min(len(names), 3) - 1]) + " and " + (
+            names[2] if len(names) == 3 else names[1] if len(names) == 2 else f"{len(names) - 2} more")
+        need = f"{n} email{'s need' if n != 1 else ' needs'} your reply, from {who}."
+        tail = (f"I'm reading {'them' if n > 1 else 'it'} and drafting {'replies' if n > 1 else 'a reply'} on the "
+                "board. I'll ask you before sending anything.")
+        return Result(f"{need} {tail}" if tool == "emails_to_reply" else f"{r.say} {need} {tail}", icon="mail")
 
     async def needs_me(self) -> Result:
         """Only what needs you (emails waiting for your reply, things waiting for your OK, your own tasks, what I

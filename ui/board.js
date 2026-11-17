@@ -106,7 +106,7 @@ function render(d) {
   lastJSON = json;
   $('greeting').textContent = d.greeting || '';
   renderWeather(d.weather);
-  renderInbox(d.emails || {});
+  renderInbox(d.emails || {}, d.replies || []);
   renderMission(d.items || []);
   renderProjects(d.projects || []);
   renderTimeline(d);
@@ -121,12 +121,62 @@ function renderWeather(w) {
     w.rain != null ? el('span', {}, `Rain ${w.rain}%`) : null);
 }
 
-function renderInbox(em) {
+// Replies Jarvis drafted for the emails waiting for yours: edit the text if you like, then Send. Your edits
+// survive the board refreshing (it re-renders when anything changes).
+const edits = {};
+function renderReplies(box, replies) {
+  const open = replies.filter((r) => r.status !== 'sent');
+  box.append(el('div', { class: 'rh' }, el('span', {}, 'Needs your reply'),
+    el('span', { class: 'rc' }, open.length ? `${open.length} waiting` : 'all answered')));
+  for (const r of replies) {
+    const kids = [
+      el('div', { class: 'rtop' }, el('div', { class: 'avatar' }, initials(r.from)),
+        el('div', {}, el('div', { class: 'from' }, r.from), el('div', { class: 'subj' }, r.subject)),
+        el('div', { class: 'when' }, r.time)),
+      r.preview ? el('div', { class: 'preview', title: r.preview }, el('b', {}, 'THEY WROTE'), r.preview) : null,
+    ];
+    if (r.status === 'drafting') {
+      kids.push(el('div', { class: 'drafting' }, el('span', { class: 'spin' }), 'Reading the email and drafting a reply…'));
+    } else if (r.status === 'sent') {
+      kids.push(el('div', { class: 'sentnote' }, '✓ Reply sent'));
+    } else if (r.status === 'sending') {
+      kids.push(el('div', { class: 'drafting' }, el('span', { class: 'spin' }), 'Sending…'));
+    } else {
+      const ta = el('textarea', { class: 'draft', rows: 5, 'data-id': r.id, spellcheck: 'true',
+        oninput: (e) => { edits[r.id] = e.target.value; } });
+      ta.value = edits[r.id] ?? r.body ?? '';
+      kids.push(
+        r.status === 'failed' ? el('div', { class: 'warnnote' }, "Couldn't draft this one. Write it here, or try Redraft.") : null,
+        el('div', { class: 'rlabel' }, 'DRAFT REPLY'), ta,
+        el('div', { class: 'ractions' },
+          el('button', { class: 'btn send', title: 'Send this reply now', onclick: () => {
+            const body = ta.value.trim();
+            if (!body) return;
+            act('reply_send', { id: r.id, body }); delete edits[r.id]; } }, 'Send'),
+          el('button', { class: 'btn', title: 'Have Jarvis write it again', onclick: () => {
+            delete edits[r.id]; act('reply_redraft', { id: r.id }); } }, 'Redraft'),
+          el('button', { class: 'btn ghost', title: "Don't reply to this one", onclick: () => act('reply_skip', { id: r.id }) }, 'Skip')));
+    }
+    box.append(el('div', { class: `reply ${r.status}` }, ...kids));
+  }
+  box.append(el('div', { class: 'rh' }, el('span', {}, 'Inbox · last 24 hours')));
+}
+
+function renderInbox(em, replies = []) {
   const box = $('inbox');
+  // keep your place while typing in a draft: the board re-renders when anything changes
+  const focused = document.activeElement && document.activeElement.classList.contains('draft')
+    ? { id: document.activeElement.dataset.id, s: document.activeElement.selectionStart, e: document.activeElement.selectionEnd } : null;
   box.replaceChildren();
   const items = em.items || [];
   const unread = items.filter((m) => m.unread).length;
-  $('inbox-badge').textContent = unread ? `${unread} new` : '';
+  const waiting = replies.filter((r) => r.status !== 'sent').length;
+  $('inbox-badge').textContent = waiting ? `${waiting} to reply` : unread ? `${unread} new` : '';
+  if (replies.length) renderReplies(box, replies);
+  if (focused) {
+    const ta = box.querySelector(`textarea.draft[data-id="${CSS.escape(focused.id)}"]`);
+    if (ta) { ta.focus(); ta.setSelectionRange(focused.s, focused.e); }
+  }
   if (!em.connected) {
     box.append(el('div', { class: 'empty' },
       el('div', {}, em.error ? 'Gmail unreachable right now.' : 'Email is not connected.'),
@@ -311,6 +361,13 @@ if (qs.get('demo')) {  // a look at the board without the backend
       { id: '2', from: 'LinkedIn', subject: 'You appeared in 14 searches this week', unread: true, time: '8:40 AM' },
       { id: '3', from: 'Workable', subject: 'Your application to Senior AI Engineer', unread: false, time: '7:05 AM' },
       { id: '4', from: 'AGCP Recruiting Team', subject: 'Next steps for your interview', unread: false, time: 'Thu' }] },
+    replies: [
+      { id: '1', from: 'Murtaza Khalid', subject: 'Re: Availability for a meeting', time: '9:12 AM', status: 'ready',
+        preview: 'Hi Rafay, are you free this week to go over the Solvix rollout? Thursday afternoon works for us.',
+        body: 'Hi Murtaza,\n\nThanks for reaching out. Thursday afternoon should work; I\'ll confirm the exact time shortly.\n\nBest regards' },
+      { id: '4', from: 'AGCP Recruiting Team', subject: 'Re: Next steps for your interview', time: 'Thu', status: 'drafting',
+        preview: 'Thank you for your time. We would like to invite you to the next round.', body: '' },
+      { id: '5', from: 'Sara Ahmed', subject: 'Re: Invoice for October', time: 'Wed', status: 'sent', preview: '', body: '' }],
     items: [
       { id: 'a', text: 'Call Ali about the contract', owner: 'you', status: 'done' },
       { id: 'b', text: 'Finish the Agreeofy summary', owner: 'you', status: 'todo', carried: true },
