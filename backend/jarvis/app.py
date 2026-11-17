@@ -236,6 +236,8 @@ class Jarvis:
         self.restart_cb = None        # set by __main__: restart into a new version (the supervisor brings it back)
         self._head = ""               # the commit Jarvis started on; a newer one is an update to offer
         self._offered_head = ""
+        self._offered_at = 0.0
+        self._declined = False        # "not now" to the update on offer: don't ask again for that one
         self._last_opened: tuple[list[str], bool] | None = None   # "show it on my screen" brings this back
         self._reply_msgs: tuple[list, float] | None = None         # the emails waiting for a reply, last listed
         # Talking like a person (17 Nov): "hmm" while you talk, "let me think" while it works, and "how long?"
@@ -2304,6 +2306,11 @@ class Jarvis:
             await asyncio.sleep(20)
             try:
                 cur = await asyncio.to_thread(head_commit, ROOT)
+                # asked, but no answer came (17 Nov: the question timed out unheard): ask again in a few minutes;
+                # a "not now" waits for the next version
+                if cur == self._offered_head and not self._declined and (self.pending or {}).get("kind") != \
+                        "restart_update" and time.monotonic() - self._offered_at > 240:
+                    self._offered_head = ""
                 if not cur or not self._head or cur in (self._head, self._offered_head):
                     continue
                 # idle, or in a call between your sentences (17 Nov: a long call held the offer back for good)
@@ -2313,7 +2320,7 @@ class Jarvis:
                         and (self.task is None or self.task.done()) and self.pending is None)
                 if not free or self.restart_cb is None:
                     continue
-                self._offered_head = cur
+                self._offered_head, self._offered_at, self._declined = cur, time.monotonic(), False
                 what = spoken_subject(await asyncio.to_thread(commit_subject, ROOT, cur))
                 sir = self.board.sir if self.board is not None else "sir"
                 log.info("update ready: %s %s", cur[:7], what)
@@ -2335,6 +2342,7 @@ class Jarvis:
             self.restart_cb()
             return True
         if NO.match(t) or _NOT_NOW.search(t) or re.search(r"\b(?:later|not now|wait)\b", t):
+            self._declined = True
             await self.say("Alright. Say \"restart\" whenever you're ready, or it'll load next time I start.",
                            then_idle=True)
             return True
