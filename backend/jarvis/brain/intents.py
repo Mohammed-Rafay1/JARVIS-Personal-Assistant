@@ -83,6 +83,7 @@ def normalize(text: str) -> str:
             app = re.search(r"\b(?:ms ?)?(word|world|excel|powerpoint|power point)\b", t)
             app = {"world": "word", "power point": "powerpoint"}.get(app.group(1), app.group(1)) if app else ""
             t = f"open {name} {app} file" if app else f"open {name}"
+    t = re.sub(r"^(?:s?h+sh+|shh+|shush|hush|sh)$", "stop", t)   # "Shh." (17 Nov) went to the chat model
     # "Open while LinkedIn." (17 Nov): a stray filler word between the verb and the name
     t = re.sub(r"^(open|close|launch|play) (?:while|well|uh|um|ah|er|the uh|like) ", r"\1 ", t)
     # "open downloads folder from my laptop": where it is goes without saying
@@ -721,6 +722,16 @@ def _open(t: str, resolve_open: Callable[[str, str], Intent] | None) -> Intent |
         if verb in ("start", "run"):
             return Intent("play_it")
         return Intent("say", {"text": "Open what? Tell me the app, file, folder or website."})
+    # "open messaging tab in linkedin" (17 Nov, looked for a file): a page of a known website
+    sm = re.fullmatch(r"(?P<part>.+?)(?: tab| page| section)? (?:in|on|of|at) (?P<site>[\w.]+)", target)
+    if sm and not _LOC.search(target):
+        try:
+            from ..tools.browser import resolve_site
+
+            if resolve_site(sm.group("site")):
+                return Intent("open_website", {"site": f"{sm.group('site')} {sm.group('part')}"})
+        except Exception:
+            pass
     # "open flyer data.rar file from my downloads", "open folder Solvix on desktop", "open the Solvix folder"
     if _LOC.search(target) or _EXT.search(target) or re.match(r"^" + _FOLDERISH + r"s? ", target) \
             or re.search(r"\s" + _FOLDERISH + r"$", target):

@@ -141,3 +141,13 @@ def test_draft_reply_phrases():
         assert _DRAFT_REPLY.search(said), said
     assert _YES_LEAD.match("yes please make a drop for their email")
     assert not _DRAFT_REPLY.search("open spotify")
+
+
+def test_more_from_the_17_nov_log(monkeypatch):
+    from jarvis.brain.intents import parse
+    from jarvis.tools import CTX
+    monkeypatch.setattr(CTX, "cfg", {"websites": {"linkedin": "https://www.linkedin.com"}})
+    assert parse("Shh.").tool == "stop"
+    assert parse("Open while LinkedIn.").args.get("name") == "linkedin"
+    i = parse("Open Messaging tab in LinkedIn.")
+    assert (i.tool, i.args["site"]) == ("open_website", "linkedin messaging")
