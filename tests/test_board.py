@@ -393,7 +393,8 @@ def test_a_time_in_a_request_makes_a_job():
 def test_a_scheduled_job_moves_to_the_next_day_once(tmp_path):
     day = [dt.date(2026, 11, 15)]
     s = B.Store(tmp_path / "b.json", today=lambda: day[0])
-    s.schedule("Email Sara: Invoice", time.time() - 60, "send_email", {"draft_id": "d1"})
+    at = dt.datetime(2026, 11, 15, 15, 0).timestamp()   # a fixed time on that day, not the real clock
+    s.schedule("Email Sara: Invoice", at, "send_email", {"draft_id": "d1"})
     day[0] = dt.date(2026, 11, 16)
     s2 = B.Store(tmp_path / "b.json", today=lambda: day[0])
     assert [i["status"] for i in s2.items] == ["scheduled"]

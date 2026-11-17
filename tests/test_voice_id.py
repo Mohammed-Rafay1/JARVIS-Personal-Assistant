@@ -133,6 +133,26 @@ def test_settings_are_saved(tmp_path, monkeypatch):
     assert load_levels(tmp_path / "voice" / "mic_levels.json") == {"External Microphone": 2.0}
 
 
+def test_recalibrating_keeps_voice_id_off_when_you_turned_it_off(tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text("voice_id:\n  enabled: false\n  keep_off: true\n  match_threshold: 0.75\n",
+                                          encoding="utf-8")
+    monkeypatch.setattr(calibrate, "ROOT", tmp_path)
+    monkeypatch.setattr(calibrate, "VOICE", tmp_path / "voice")
+    calibrate.save_voice_settings(0.70, 2.0, "Mic", enabled=True)
+    s = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "  enabled: false" in s and "match_threshold: 0.70" in s
+
+
+def test_voice_id_off_means_no_not_my_boss(monkeypatch):
+    from jarvis.app import Jarvis
+    j = Jarvis.__new__(Jarvis)
+    j.cfg = {"voice_id": {"enabled": False, "model": "config.yaml", "lock_wake": True, "lock_commands": True}}
+    j.speaker = None
+    health = {}
+    j._load_voiceprint(health)
+    assert j.speaker is None and not j._voice_lock("wake") and not j._voice_lock("commands")
+
+
 def test_voiced_part_drops_the_silence():
     a = np.concatenate([np.zeros(16000), np.sin(np.arange(16000) / 3) * 0.2, np.zeros(16000)]).astype(np.float32)
     assert 14000 <= calibrate.voiced_part(a).size <= 18000

@@ -186,6 +186,8 @@ def save_voice_settings(threshold: float, gain: float, device: str, enabled: boo
         else:  # add it under match_threshold
             line = f"  {key}: {val:.2f}".ljust(29) + f"# {note}"
             s = re.sub(r"(?m)^(  match_threshold:.*)$", lambda m: m.group(1) + "\n" + line, s, count=1)
+    if re.search(r"(?m)^  keep_off:\s*true", s):  # you switched voice recognition off: recalibrating keeps it off
+        enabled = False
     s = re.sub(r"(?ms)^(voice_id:.*?^  enabled:\s*)(?:true|false)", rf"\g<1>{'true' if enabled else 'false'}", s,
                count=1)
     path.write_text(s, encoding="utf-8")

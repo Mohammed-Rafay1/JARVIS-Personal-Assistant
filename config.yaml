@@ -19,7 +19,8 @@ mic:
   auto_level: true           # keep your voice at a steady level (learns from your speech only; each mic remembered)
 
 voice_id:                    # recognise your voice (calibrate_wake.bat makes your voiceprint)
-  enabled: true
+  enabled: false             # off (17 Nov): it was refusing your own voice with "not my boss"
+  keep_off: true             # calibrate_wake.bat won't switch it back on; set false and enabled true to use it
   model: "data/models/speaker/wespeaker_en_voxceleb_resnet34.onnx"
   profile: "data/voice/voiceprint.npz"
   match_threshold: 0.75      # a whole spoken command must score this to count as you
