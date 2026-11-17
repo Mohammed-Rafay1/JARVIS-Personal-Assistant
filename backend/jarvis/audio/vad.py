@@ -99,10 +99,6 @@ class Endpointer:
             return "done"
         return "speaking"
 
-    def hold(self, frame: np.ndarray) -> None:
-        """Keep a frame without judging it (Jarvis's own "uh-huh" is playing): the pause count is frozen."""
-        self.frames.append(frame)
-
     def audio(self) -> np.ndarray:
         """The captured utterance as float32 in [-1, 1]."""
         mine = self.frames

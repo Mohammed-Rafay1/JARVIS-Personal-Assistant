@@ -149,21 +149,14 @@ def _tidy_spoken(sentence: str) -> str:
 # "Edge, Database," on the headset, 17 Nov). Worth a second, careful listen.
 # ("Okay, yeah, yeah." from a video took 5 s of re-checking, 17 Nov: only "hey"-like openings, 1-4 words after)
 _MAYBE_WAKE = re.compile(r"^\W*(?:hey|hi|hay|edge|hate|age|eh|aye)\b[\s,.!?]+(?:\S+\s*){1,4}$", re.I)
-# "Hmm, let me think." while a request takes a while; later lines once it's been longer
+# "Let me think." while a request takes a while; later lines once it's been longer
 _NUDGES = [
-    ["Hmm, let me think.", "Give me a second, {sir}.", "Let me see.", "One moment, I'm on it.", "Right, let me check."],
+    ["Let me think.", "Give me a second, {sir}.", "Let me see.", "One moment, I'm on it.", "Right, let me check."],
     ["Still thinking, {sir}.", "Bear with me, nearly there.", "Still working on it."],
     ["This one's taking a little longer, {sir}. I'm still on it.", "Almost there, thanks for waiting.",
      "Still going. It shouldn't be much longer."],
     ["Still on it, {sir}.", "Nearly done, {sir}."],
 ]
-# "how long?", "are you there?", "what's taking so long?" while Jarvis is still working
-_STATUS_Q = re.compile(
-    r"\bhow (?:much )?(?:long|longer|more time|much time|much more)\b|\bhow (?:is|'s) it going\b|"
-    r"\bare you (?:still )?(?:there|here|thinking|working|on it|done|ready|finished|busy|listening)\b|"
-    r"\bwhat(?:'s| is) (?:taking|happening|going on)\b|\b(?:still )?(?:thinking|working)\b\?*$|"
-    r"\bany (?:update|progress|news)\b|\bis it (?:done|ready|finished)\b|^(?:hello|hey|jarvis|you there|status)$|"
-    r"\bwhat are you doing\b|\bwhere are we\b|\bhow far\b|\btaking (?:so |too )?long\b")
 _CORRECTION = re.compile(r"^\W*(?:no[,.]?\s+)?(?:i said|i asked|i meant|i mean|what i said (?:was|is)|i was asking)"
                          r"[,:.]?\s+(?=\w+(?:\s+\w+){2,})", re.I)
 _YES_LEAD = re.compile(r"^(?:yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|of course|absolutely)\b")
@@ -240,17 +233,12 @@ class Jarvis:
         self._declined = False        # "not now" to the update on offer: don't ask again for that one
         self._last_opened: tuple[list[str], bool] | None = None   # "show it on my screen" brings this back
         self._reply_msgs: tuple[list, float] | None = None         # the emails waiting for a reply, last listed
-        # Talking like a person (17 Nov): "hmm" while you talk, "let me think" while it works, and "how long?"
-        # answered without dropping the work
-        self._cues: list[np.ndarray] = []
-        self._cue_sr = 22050
-        self._cue_n, self._cue_at, self._cue_until = 0, 0.0, 0.0
+        # "Let me think" while a request takes a while (17 Nov)
         self._turn_t0 = 0.0         # when the current request started (you stopped talking)
         self._last_spoke = 0.0      # when Jarvis last said anything
         self._nudges = 0            # "let me think" lines said for this request
         self._answering = False     # the real answer has started: no more "still thinking"
-        self._doing = ""            # what it's busy with, for "how long?"
-        self._background: asyncio.Task | None = None   # the request still running while you ask "how long?"
+        self._doing = ""            # what it's busy with (shown in the log)
         self.last_heard = 0.0         # when you last said or typed something (Jarvis doesn't speak up over you)
         # up to five exchanges (trimmed in _chat): enough to hold a conversation, quick on this CPU
         self.history: deque[dict] = deque()
@@ -400,26 +388,7 @@ class Jarvis:
         tts_thread.join()
         self.tts = voice.get("tts") or TTS("sapi")
         health["voice"] = self.tts.name
-        threading.Thread(target=self._make_cues, daemon=True, name="cues").start()
         return health
-
-    def _make_cues(self) -> None:
-        """The little "hmm" / "uh-huh" Jarvis makes while you talk, in its own voice, quiet. ("Mm-hmm" itself
-        comes out of this voice as "and mam"; these three were heard back as meant.)"""
-        from .audio.tts import SAMPLE_RATE as TTS_SR
-
-        cues = []
-        for word in ("Hmm.", "Uh-huh.", "Mm."):
-            try:
-                a = np.asarray(self.tts.synth(word), dtype=np.float32)
-                loud = np.where(np.abs(a) > 0.02)[0]
-                if loud.size:
-                    a = a[max(0, loud[0] - 200):loud[-1] + 400]
-                cues.append(a * float(self.cfg["listening"].get("backchannel_volume", 0.35)))
-            except Exception as e:
-                log.debug("listening cue %r: %s", word, e)
-        self._cues = cues
-        self._cue_sr = TTS_SR
 
     def _load_voiceprint(self, health: dict) -> None:
         """Your voiceprint (audio/speaker.py), if calibration made one: only you wake Jarvis, other voices don't
@@ -664,16 +633,7 @@ class Jarvis:
                     self._backup_wake_feed(frame)
             elif self.mode == "capture":
                 tracker = self.voice_tracker if self._voice_lock("listening") else None
-                now = time.monotonic()
-                if now < self._cue_until:
-                    # Jarvis's own "uh-huh" is playing: it neither ends your sentence nor gets transcribed as
-                    # yours (silence in its place when the speakers echo into the mic; a headset doesn't)
-                    k = self._echo_k()
-                    self.endpointer.hold(frame if (k is not None and k < 0.03) else np.zeros_like(frame))
-                    continue
                 status = self.endpointer.feed(frame, tracker.me() if tracker else None)
-                if status == "speaking":
-                    self._maybe_backchannel(now)
                 if tracker:
                     tracker.feed(frame, self.endpointer.last_speech)
                 now = time.monotonic()
@@ -687,23 +647,6 @@ class Jarvis:
                     if audio is not None:
                         self._heard = self.endpointer.carry + self.endpointer.frames
                     self.loop.call_soon_threadsafe(self._utterance_ready, audio)
-
-    def _maybe_backchannel(self, now: float) -> None:
-        """A soft "hmm" / "uh-huh" in a natural pause of a longer sentence, the way someone listening does:
-        after ~3 s of talking, at a short pause (0.3 s, well before the 0.6 s that ends a sentence), at most
-        twice per sentence and not too often."""
-        ep = self.endpointer
-        if not self._cues or not self.cfg["listening"].get("backchannel", True) or self.player.busy:
-            return
-        if ep.speech_frames < 38 or ep.silent_run != 4 or self._cue_n >= 2 or now - self._cue_at < 4.5:
-            return
-        import random
-
-        cue = random.choice(self._cues)
-        self._cue_n += 1
-        self._cue_at = now
-        self._cue_until = now + cue.size / self._cue_sr + 0.15
-        self.player.play(cue)
 
     def _played_now(self) -> float:
         """How loud Jarvis's voice is right now (raw RMS in mic units), from what the player just played."""
@@ -864,7 +807,6 @@ class Jarvis:
             self.voice_tracker.reset()
         for f in preroll or []:
             self.endpointer.frames.append(f)
-        self._cue_n, self._cue_until = 0, 0.0
         self.mode = "capture"
         self._set_state("listening", follow_up=self.follow_up)
 
@@ -884,14 +826,6 @@ class Jarvis:
                               "muted": self.muted})
             return
         log.info("wake (%s)", source)
-        if source == "barge-in" and carry is None and self.in_call and self.task and not self.task.done() \
-                and not self._recognising and not self._answering and self._background is None:
-            # you spoke while it's still working on your request ("how long?"): listen, but keep working
-            log.info("listening while still working on the last request")
-            self._background, self.task = self.task, None
-            self._hush()
-            self._start_capture(self._listen_timeout(), preroll)
-            return
         self._interrupt()
         self.speak_aloud = True
         if not self.in_call:
@@ -966,9 +900,6 @@ class Jarvis:
         """Stop talking and abandon whatever is in progress."""
         if self.task and not self.task.done():
             self.task.cancel()
-        if self._background is not None and not self._background.done():
-            self._background.cancel()
-        self._background = None
         self._recognising = False
         self._hush()
         self.mode = "wake"
@@ -1019,8 +950,7 @@ class Jarvis:
             return
         self._set_state("thinking")
         self.player.play(earcons.HEARD)
-        if self._background is None:   # a new request (not "how long?" asked about the one still running)
-            self._new_turn("working out what you said")
+        self._new_turn("working out what you said")
         t0 = time.perf_counter()
         gen = self._speech_gen
         self._recognising = True
@@ -1035,11 +965,6 @@ class Jarvis:
                 self._recognising = False
         self.last_stt = time.perf_counter() - t0
         self._heard_conf = self.stt.last_conf
-        bg, self._background = self._background, None
-        if bg is not None and not bg.done():
-            # you spoke while the last request was still being worked on
-            if await self._while_working(bg, text or ""):
-                return
         if not text:  # noise or background chatter: keep listening quietly
             if self.in_call and audio.size > MIC_SR * 0.8:
                 self.ui.send({"type": "unclear"})  # a quiet hint on screen that you weren't understood
@@ -1065,58 +990,9 @@ class Jarvis:
         self._answering = False
         self._doing = doing
 
-    async def _while_working(self, bg: asyncio.Task, text: str) -> bool:
-        """You said something while Jarvis was still working on your last request. "How long?" / "are you
-        there?" gets an answer and the work carries on; "stop" / "never mind" drops it; anything else is a new
-        request and replaces it. True when handled here."""
-        t = normalize(text) if text else ""
-
-        async def resume() -> None:
-            self.task = bg
-            await self._wait_speech()
-            if not bg.done() and self.mode != "capture":
-                self._set_state("thinking")
-                self.mode = "off"
-
-        if not t:  # noise, or nothing clear: just carry on
-            await resume()
-            return True
-        if len(t.split()) <= 14 and _STATUS_Q.search(t):
-            self.ui.send({"type": "transcript", "text": text, "final": True})
-            log.info("asked while working (%s): %r", self._doing or "busy", text)
-            self._queue_speech(self._progress_line(), filler=True)
-            await resume()
-            return True
-        if STOP.match(t) or _NOT_NOW.search(t):
-            self.ui.send({"type": "transcript", "text": text, "final": True})
-            bg.cancel()
-            await self.say(f"Okay, {self.cfg['address_as']}, I've stopped.", then_idle=True)
-            return True
-        log.info("a new request replaces the one still running: %r", text)
-        bg.cancel()
-        self._new_turn("working on it")
-        return False
-
-    def _progress_line(self) -> str:
-        """An honest "still thinking" for "how long?": what it's doing and for how long so far."""
-        import random
-
-        sir = self.cfg["address_as"]
-        secs = int(time.monotonic() - self._turn_t0) if self._turn_t0 else 0
-        doing = self._doing or "working on it"
-        if secs < 8:
-            return random.choice([f"I'm still {doing}, {sir}. Just a few more seconds.",
-                                  f"Nearly there, {sir}. I'm {doing}."])
-        typical = {"researching that": " These usually take about a minute.",
-                   "looking that up": " Usually under half a minute.",
-                   "checking the project": " That takes about fifteen seconds.",
-                   "thinking about your question": " It shouldn't be much longer."}.get(doing, "")
-        return random.choice([f"I'm still {doing}, {sir}. About {secs} seconds so far.{typical}",
-                              f"Still on it, {sir}: {doing}, {secs} seconds in.{typical}"])
-
     async def _narrate(self) -> None:
         """While a request takes a while and Jarvis has nothing to say yet, it says so, the way a person
-        would ("Hmm, let me think." ... "Still on it, nearly there."), instead of going silent."""
+        would ("Let me think." ... "Still on it, nearly there."), instead of going silent."""
         import random
 
         while True:
@@ -1132,7 +1008,7 @@ class Jarvis:
                 before = self.state
                 self._queue_speech(line, filler=True)
                 await self._wait_speech()
-                # back to "thinking", so you can cut in with "how long?" and the work carries on
+                # back to "thinking" while the work carries on
                 if self.task and not self.task.done() and self.mode == "wake" and not self._answering:
                     self._set_state(before if before in ("thinking", "acting") else "thinking")
                     self.mode = "off"
