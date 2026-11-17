@@ -149,14 +149,6 @@ def _tidy_spoken(sentence: str) -> str:
 # "Edge, Database," on the headset, 17 Nov). Worth a second, careful listen.
 # ("Okay, yeah, yeah." from a video took 5 s of re-checking, 17 Nov: only "hey"-like openings, 1-4 words after)
 _MAYBE_WAKE = re.compile(r"^\W*(?:hey|hi|hay|edge|hate|age|eh|aye)\b[\s,.!?]+(?:\S+\s*){1,4}$", re.I)
-# "Let me think." while a request takes a while; later lines once it's been longer
-_NUDGES = [
-    ["Let me think.", "Give me a second, {sir}.", "Let me see.", "One moment, I'm on it.", "Right, let me check."],
-    ["Still thinking, {sir}.", "Bear with me, nearly there.", "Still working on it."],
-    ["This one's taking a little longer, {sir}. I'm still on it.", "Almost there, thanks for waiting.",
-     "Still going. It shouldn't be much longer."],
-    ["Still on it, {sir}.", "Nearly done, {sir}."],
-]
 _CORRECTION = re.compile(r"^\W*(?:no[,.]?\s+)?(?:i said|i asked|i meant|i mean|what i said (?:was|is)|i was asking)"
                          r"[,:.]?\s+(?=\w+(?:\s+\w+){2,})", re.I)
 _YES_LEAD = re.compile(r"^(?:yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|of course|absolutely)\b")
@@ -233,12 +225,6 @@ class Jarvis:
         self._declined = False        # "not now" to the update on offer: don't ask again for that one
         self._last_opened: tuple[list[str], bool] | None = None   # "show it on my screen" brings this back
         self._reply_msgs: tuple[list, float] | None = None         # the emails waiting for a reply, last listed
-        # "Let me think" while a request takes a while (17 Nov)
-        self._turn_t0 = 0.0         # when the current request started (you stopped talking)
-        self._last_spoke = 0.0      # when Jarvis last said anything
-        self._nudges = 0            # "let me think" lines said for this request
-        self._answering = False     # the real answer has started: no more "still thinking"
-        self._doing = ""            # what it's busy with (shown in the log)
         self.last_heard = 0.0         # when you last said or typed something (Jarvis doesn't speak up over you)
         # up to five exchanges (trimmed in _chat): enough to hold a conversation, quick on this CPU
         self.history: deque[dict] = deque()
@@ -480,7 +466,6 @@ class Jarvis:
         self.board = Board(self)
         asyncio.create_task(self.board.run())  # reminders, focus timer, morning briefing, evening wrap-up
         asyncio.create_task(self._watch_updates())
-        asyncio.create_task(self._narrate())
         self.mode = "wake"
         self._set_state("idle")
         self._status("Ready", ready=True, health=health)
@@ -570,7 +555,7 @@ class Jarvis:
                 # changed your mind), drop that attempt and listen afresh.
                 self._preroll.append(frame)
                 self._wake_ring.append(frame)
-                if self.in_call and self.state in ("thinking", "acting") and self.cfg["call"].get("barge_in", True) \
+                if self.in_call and self.state == "thinking" and self.cfg["call"].get("barge_in", True) \
                         and self._rethink_feed(frame) and self._is_you(list(self._wake_ring), "barge_in", 0.1):
                     pre = list(self._preroll)[-6:]
                     if self._recognising:
@@ -581,7 +566,7 @@ class Jarvis:
                             lambda p=pre, c=list(self._heard): self._wake("barge-in", p, carry=c))
                     else:
                         self.loop.call_soon_threadsafe(lambda p=pre: self._wake("barge-in", p))
-                elif self.state not in ("thinking", "acting"):
+                elif self.state != "thinking":
                     self._rethink_run = 0
                 continue
             if self.mode == "wake":
@@ -950,7 +935,6 @@ class Jarvis:
             return
         self._set_state("thinking")
         self.player.play(earcons.HEARD)
-        self._new_turn("working out what you said")
         t0 = time.perf_counter()
         gen = self._speech_gen
         self._recognising = True
@@ -982,53 +966,6 @@ class Jarvis:
             return
         self.ui.send({"type": "transcript", "text": text, "final": True})
         await self.handle_text(text)
-
-    # ------------------------------------------------------------------ talking like a person
-    def _new_turn(self, doing: str) -> None:
-        self._turn_t0 = time.monotonic()
-        self._nudges = 0
-        self._answering = False
-        self._doing = doing
-
-    async def _narrate(self) -> None:
-        """While a request takes a while and Jarvis has nothing to say yet, it says so, the way a person
-        would ("Let me think." ... "Still on it, nearly there."), instead of going silent."""
-        import random
-
-        while True:
-            await asyncio.sleep(0.5)
-            try:
-                if not self._narration_due(time.monotonic()):
-                    continue
-                stage = min(self._nudges, len(_NUDGES) - 1)
-                self._nudges += 1
-                line = random.choice(_NUDGES[stage]).format(sir=self.cfg["address_as"])
-                log.info("still working (%s, %.0f s): %r", self._doing or "busy",
-                         time.monotonic() - self._turn_t0, line)
-                before = self.state
-                self._queue_speech(line, filler=True)
-                await self._wait_speech()
-                # back to "thinking" while the work carries on
-                if self.task and not self.task.done() and self.mode == "wake" and not self._answering:
-                    self._set_state(before if before in ("thinking", "acting") else "thinking")
-                    self.mode = "off"
-            except Exception:
-                log.exception("narration")
-
-    def _narration_due(self, now: float) -> bool:
-        if not (self.in_call and self.speak_aloud and self.cfg["call"].get("think_aloud", True)):
-            return False
-        if self.state not in ("thinking", "acting") or self._answering or self._remote_said is not None:
-            return False
-        if not self.task or self.task.done() or self.player.busy or not self._speech_q.empty():
-            return False
-        if self._nudges >= 6 or not self._turn_t0:
-            return False
-        quiet = now - max(self._turn_t0, self._last_spoke)
-        # while it's still working out your words you may only have paused: give it longer before speaking
-        first = 6.0 if self._recognising else 3.5
-        need = (first, 8.0, 12.0, 15.0)[min(self._nudges, 3)]
-        return quiet >= need
 
     def _owner_check(self, audio: np.ndarray) -> bool:
         """Is this spoken command yours? Judged on the whole sentence (a whole sentence is where the
@@ -1314,12 +1251,6 @@ class Jarvis:
             return Result("That needs your confirmation first.", ok=False)
         self._set_state("acting", icon=name.split("_")[-1])
         log.info("tool %s %s", name, args)
-        self._doing = {"ai_research": "researching that", "web_research": "looking that up",
-                       "claude_project_status": "checking the project", "claude_projects": "checking your projects",
-                       "check_email": "going through your email", "emails_to_reply": "going through your email",
-                       "office_open": "opening the file", "open_file": "finding the file",
-                       "play_spotify": "getting the song up", "play_youtube": "finding the video",
-                       }.get(name, "working on it")
         if name == "claude_project_status":  # reading + summarising takes ~15 s on this CPU; don't go silent
             self._queue_speech("One moment, checking the project.", filler=True)
         note = ""
@@ -1334,7 +1265,7 @@ class Jarvis:
             if self._remote_said is not None and self._remote_progress:
                 self._remote_progress(note)  # on WhatsApp straight away, not with the answer a minute later
             else:
-                self._queue_speech(note, filler=True)  # a progress note, not the answer: "how long?" still works
+                self._queue_speech(note)
         if self.in_call and name in _OPENS_WINDOW:
             # shrink the call first: a full-screen window on top stops Chromium apps (Spotify, browsers)
             # from rendering, so Spotify's search results never appear and Play can't be pressed
@@ -2648,9 +2579,7 @@ class Jarvis:
         # Never "think" forever: a stuck or overloaded model once left the call on "thinking" for a minute
         # the tool list adds ~700 prompt tokens, which take this CPU another ~15 s to read
         first_wait = float(c.get("first_reply_seconds", 20)) + (25 if cold else 0) + (15 if tools else 0)
-        self._doing = "thinking about your question"
-        # in a call, _narrate says "let me think" (and more if it takes longer); this one is for outside calls
-        filler = None if cold or self.in_call else asyncio.get_running_loop().call_later(
+        filler = None if cold else asyncio.get_running_loop().call_later(
             float(c.get("filler_after_seconds", 4)),
             lambda: not spoken and self._queue_speech(f"Just a moment, {self.cfg['address_as']}.", filler=True))
         max_tokens = int(c.get("max_reply_tokens", 320))  # room for a proper answer or a bit of advice
@@ -2740,9 +2669,6 @@ class Jarvis:
 
     # ------------------------------------------------------------------ speech
     def _queue_speech(self, sentence: str, filler: bool = False) -> None:
-        self._last_spoke = time.monotonic()
-        if not filler:
-            self._answering = True   # the answer has started (a streamed chat reply comes this way)
         self.ui.send({"type": "reply", "text": sentence, "append": True})
         if not filler:  # "One moment." isn't worth repeating when you say "What?"
             self._said.append(sentence)
@@ -2786,7 +2712,6 @@ class Jarvis:
             return
         from .audio.tts import split_sentences
 
-        self._answering = True   # the answer itself: no "still thinking" over or after it
         log.info("jarvis: %r", text[:300])
         self.ui.send({"type": "reply", "text": "", "append": False})
         for s in split_sentences(text):

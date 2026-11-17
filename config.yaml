@@ -50,7 +50,6 @@ call:                        # "Hey Jarvis" opens a full-screen call that keeps 
   barge_in: true             # start talking while Jarvis speaks and it stops to listen
   barge_in_ratio: 2.5        # how much louder than Jarvis's own echo your voice must be (raise if it interrupts itself)
   rethink_min_rms: 1800      # how loud speech must be to interrupt Jarvis while it's thinking (raise if other voices interrupt it)
-  think_aloud: true          # "Let me think." when something takes a few seconds; "still on it" if longer
 
 stt:
   model: base.en             # fast first pass
