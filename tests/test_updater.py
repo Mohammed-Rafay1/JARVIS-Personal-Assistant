@@ -151,3 +151,10 @@ def test_more_from_the_17_nov_log(monkeypatch):
     assert parse("Open while LinkedIn.").args.get("name") == "linkedin"
     i = parse("Open Messaging tab in LinkedIn.")
     assert (i.tool, i.args["site"]) == ("open_website", "linkedin messaging")
+
+
+def test_a_correction_replaces_the_misheard_question():
+    from jarvis.app import _CORRECTION
+    assert _CORRECTION.sub("", "I said, what do you know about Hitler?") == "what do you know about Hitler?"
+    assert _CORRECTION.sub("", "No, I meant the weather in Lahore") == "the weather in Lahore"
+    assert _CORRECTION.sub("", "I said yes") == "I said yes"          # too short to be a re-asked question

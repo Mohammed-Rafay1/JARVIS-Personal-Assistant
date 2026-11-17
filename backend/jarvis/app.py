@@ -148,6 +148,8 @@ def _tidy_spoken(sentence: str) -> str:
 # A short greeting and a word or two: likely "Hey Jarvis" that the fast pass garbled ("Hey, did we see you?",
 # "Edge, Database," on the headset, 17 Nov). Worth a second, careful listen.
 _MAYBE_WAKE = re.compile(r"^\W*(?:hey|hi|hay|edge|hate|age|eh|aye|a|okay|ok|yo)\b[\s,.!?]+(?:\S+\s*){1,4}$", re.I)
+_CORRECTION = re.compile(r"^\W*(?:no[,.]?\s+)?(?:i said|i asked|i meant|i mean|what i said (?:was|is)|i was asking)"
+                         r"[,:.]?\s+(?=\w+(?:\s+\w+){2,})", re.I)
 _YES_LEAD = re.compile(r"^(?:yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|of course|absolutely)\b")
 # "make a draft (reply) for that email", "make a drop for their email" (draft heard as drop), "reply to it"
 _DRAFT_REPLY = re.compile(r"\b(?:make|write|prepare|create|do|draft|give me)\s+(?:a |the |me a )?(?:draft|drop|reply|"
@@ -2533,6 +2535,16 @@ class Jarvis:
             # the conversation makes the model re-read all of it (~20 s on this CPU), so do that rarely
             for _ in range(len(self.history) - 4):
                 self.history.popleft()
+        # "I said, what do you know about Hitler?" after it heard "at all, Fitle" (17 Nov): a correction replaces
+        # the misheard question, or the model answers both and invents something for the wrong one
+        fixed = _CORRECTION.sub("", text).strip()
+        if fixed and fixed != text.strip():
+            while self.history and self.history[-1]["role"] != "user":
+                self.history.pop()
+            if self.history:
+                self.history.pop()
+            log.info("correction: replacing the misheard question with %r", fixed)
+            text = fixed[:1].upper() + fixed[1:]
         self.history.append({"role": "user", "content": text})
         buf, spoken, tool_results = "", [], []
         # The 3B model gets confused by tool schemas on plain questions (it emits broken tool calls),
