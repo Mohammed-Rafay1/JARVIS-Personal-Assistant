@@ -20,7 +20,9 @@ _WAKE = re.compile(r"^(?:(?:hey|hi|okay|ok|hello|yo|a)\s+)?(?:jarvis|jervis|trav
 # Whisper's other spellings of "Jarvis" for this voice are also real names, so they are only dropped when a
 # command follows: "Davis, play Dilruba on Spotify" -> "play Dilruba on Spotify", but "Davis is late" stays.
 _WAKE_NAME_CMD = re.compile(
-    r"^(?:davis|dervis|purvis|harvis|charvis)[\s,.!]+(?=(?:please |can you |could you )?(?:open|close|play|played|"
+    # "Get With Closed Board", "There is Open Board" (17 Nov, the laptop mic): "Jarvis" heard as two words
+    r"^(?:davis|dervis|purvis|harvis|charvis|get with|get whiz|get wisped|get wist|there is|there's)[\s,.!]+"
+    r"(?=(?:please |can you |could you )?(?:open|opened|close|closed|clothes|hide|play|played|"
     r"pause|stop|search|google|find|send|email|check|show|tell|what|what's|how|lock|mute|unmute|set|turn|go|"
     r"launch|start|read|reply|whatsapp|volume|next|skip)\b)")
 _POLITE_PRE = re.compile(
@@ -50,6 +52,8 @@ def normalize(text: str) -> str:
     # "Jarvis opens Spotify", "playing Dilruba", "closes Chrome": the command verb heard with an ending
     # ("opening hours..." is a question, so only the "-s" forms, and "playing", are taken as commands)
     t = re.sub(r"^(open|play|close|search|launch)(?:s|es)\b", r"\1", t)
+    t = re.sub(r"^(open|close)(?:ed|d)\b", r"\1", t)   # "closed board", "opened the board": the past tense
+    t = re.sub(r"^clothes?(?= (?:the |my |this |that )?(?:board|dashboard|overview|hud)\b)", "close", t)
     t = re.sub(r"^playing\b(?=.+\bon (?:spotify|youtube)$)", "play", t)
     # "Jarvis gave me an update about everything" (16 Nov, twice): "give me", heard in the past tense
     t = re.sub(r"^gave me\b", "give me", t)
@@ -832,6 +836,12 @@ def _board(t: str) -> Intent | None:
                             r"(?: (?:in|on|at))? (?:the |my )?(?:jarvis )?(?:overview )?(?:board|dashboard|planner|"
                             r"overview|command (?:center|centre))(?: now)?", t):
         return Intent("board_show", {"view": "all"})
+    # any way of closing it, however it was heard: "get with closed board" (17 Nov) used to open it again
+    if len(t.split()) <= 8 and re.search(r"\b(?:board|dashboard|overview|hud)\b", t) \
+            and re.search(r"\b(?:close|closed|closes|closing|hide|hidden|dismiss|minimi[sz]e|put away|go away|"
+                          r"get rid of|take (?:it |the board )?(?:down|off)|remove)\b", t) \
+            and not re.search(r"\b(?:add|put|write|note|mark|tick)\b(?! away)", t):
+        return Intent("board_hide")
     # any other way of asking for it: "give me the overall overview on the board", "opened the board" (Whisper's
     # past tense of "open"), "overview of my emails and Claude Code projects" (15 Nov: those opened only the
     # projects, or went to the chat model, which said it couldn't open a board)

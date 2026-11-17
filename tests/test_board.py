@@ -390,6 +390,18 @@ def test_a_time_in_a_request_makes_a_job():
     assert B.split_schedule("email sara that the meeting is at 3 pm", now) is None  # the time is the message
 
 
+@pytest.mark.parametrize("heard", ["Get With Closed Board.", "Get Whiz Clothes Board.", "Jarvis, close board",
+                                   "Jarvis closed the board", "close the board please", "hide the board"])
+def test_close_board_as_heard_on_17_nov(heard):
+    assert parse(heard).tool == "board_hide"   # these used to answer "Here's your board"
+
+
+def test_open_board_as_heard_on_17_nov():
+    assert parse("There is Open Board.").tool == "board_show"
+    other = parse("there is a problem with the board")
+    assert other is None or other.tool != "board_hide"
+
+
 def test_a_scheduled_job_moves_to_the_next_day_once(tmp_path):
     day = [dt.date(2026, 11, 15)]
     s = B.Store(tmp_path / "b.json", today=lambda: day[0])
