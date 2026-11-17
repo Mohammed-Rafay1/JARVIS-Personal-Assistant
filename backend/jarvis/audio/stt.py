@@ -89,6 +89,26 @@ class STT:
             self._busy.release()
         return " ".join(s.text for s in segments if s.no_speech_prob < 0.6 and s.avg_logprob > -1.5).strip()
 
+    def wake_recheck(self, audio: np.ndarray) -> str:
+        """A second listen to a short "Hey ..." the fast pass couldn't place ("Hey, did we see you?", "Edge,
+        Database," on the headset, 17 Nov): the accurate model, told to expect "Hey Jarvis"."""
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        if peak < 0.01 or not self._busy.acquire(timeout=1.0):
+            return ""
+        try:
+            t = time.perf_counter()
+            model = self.accurate if self.accurate is not None else self.model
+            segments = list(model.transcribe(
+                _trim(audio / peak * 0.9), language="en", beam_size=3, best_of=3, temperature=0.0,
+                condition_on_previous_text=False, without_timestamps=True,
+                initial_prompt="Hey Jarvis. Hey Jarvis, open the board.", hotwords="Jarvis",
+            )[0])
+            text = " ".join(s.text for s in segments if s.no_speech_prob < 0.6).strip()
+            log.info("wake re-check %.2fs: %r", time.perf_counter() - t, text)
+            return text
+        finally:
+            self._busy.release()
+
     def _run(self, model, audio: np.ndarray) -> tuple[list, float]:
         segments = list(model.transcribe(
             audio, language="en", beam_size=1, best_of=1, temperature=0.0,

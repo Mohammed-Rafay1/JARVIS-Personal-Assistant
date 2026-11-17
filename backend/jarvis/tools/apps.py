@@ -192,6 +192,27 @@ def _folders_said(closed: list[str]) -> str:
     return closed[0] if len(closed) == 1 else f"{len(closed)} folders"
 
 
+def _close_tab(name: str) -> bool:
+    """The browser tab showing this site (its window's title names the tab in front): bring it forward, Ctrl+W."""
+    import ctypes
+    import time
+
+    from .front import bring_to_front, find_window
+
+    site = re.sub(r"\.(?:com|org|net|io|ai|pk)\b.*$|\s+(?:tab|website|site|page)$", "", name.strip().lower())
+    hwnd = find_window([site, site.replace(" ", "")], browser=True)
+    if not hwnd or not bring_to_front(hwnd):
+        return False
+    u32 = ctypes.windll.user32
+    time.sleep(0.15)
+    u32.keybd_event(0x11, 0, 0, 0)       # Ctrl down
+    u32.keybd_event(0x57, 0, 0, 0)       # W
+    u32.keybd_event(0x57, 0, 2, 0)
+    u32.keybd_event(0x11, 0, 2, 0)
+    log.info("closed browser tab: %s", site)
+    return True
+
+
 @tool("Close an open application window or folder window by name (the app may ask to save work)",
       name="Application or folder name")
 async def close_app(name: str) -> Result:
@@ -207,5 +228,8 @@ async def close_app(name: str) -> Result:
         folders = await asyncio.to_thread(_close_folders, name)  # "close Solvix": an open folder of that name
         if folders:
             return Result(f"Closed {_folders_said(folders)}.", icon="folder")
+        # "close YouTube" (17 Nov): a website is a browser tab, not an app
+        if await asyncio.to_thread(_close_tab, name):
+            return Result(f"Closed the {name} tab.", icon="web")
         return Result(f"I don't see {name} open.", ok=False, icon="app")
     return Result(f"Closing {name}.", icon="app")

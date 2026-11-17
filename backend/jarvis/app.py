@@ -139,6 +139,14 @@ def _tidy_spoken(sentence: str) -> str:
 
 
 # "not now", "I don't have to send email now", "forget it": the user doesn't want to carry on
+# A short greeting and a word or two: likely "Hey Jarvis" that the fast pass garbled ("Hey, did we see you?",
+# "Edge, Database," on the headset, 17 Nov). Worth a second, careful listen.
+_MAYBE_WAKE = re.compile(r"^\W*(?:hey|hi|hay|edge|hate|age|eh|aye|a|okay|ok|yo)\b[\s,.!?]+(?:\S+\s*){1,4}$", re.I)
+_SHOW_IT = re.compile(r"\b(?:in|into|to|on) the background\b|\bbehind (?:the |my |other )?(?:windows?|screen)\b|"
+                      r"\b(?:show|bring|put|pull) (?:it|that|this|them|(?:the |my )?\w+(?: page| window| app)?) "
+                      r"(?:up |back )?(?:on|to|onto|in front of|forward)(?: (?:my|the) (?:screen|front))?\b|"
+                      r"\bi (?:want to|wanna|can'?t|cannot) see (?:it|that|the \w+(?: page| window)?)\b|"
+                      r"\bto the front\b|\bon (?:my|the) screen\b")
 _NOT_NOW = re.compile(r"\b(?:don'?t|do not|no need|not now|never ?mind|forget it|cancel|leave it|skip it|not anymore)\b")
 
 
@@ -199,6 +207,7 @@ class Jarvis:
         self.restart_cb = None        # set by __main__: restart into a new version (the supervisor brings it back)
         self._head = ""               # the commit Jarvis started on; a newer one is an update to offer
         self._offered_head = ""
+        self._last_opened: tuple[list[str], bool] | None = None   # "show it on my screen" brings this back
         self.last_heard = 0.0         # when you last said or typed something (Jarvis doesn't speak up over you)
         # up to five exchanges (trimmed in _chat): enough to hold a conversation, quick on this CPU
         self.history: deque[dict] = deque()
@@ -733,6 +742,12 @@ class Jarvis:
         finally:
             self._wake_checking = False
         rest = wake_phrase(text) if text else None
+        if rest is None and text and _MAYBE_WAKE.match(text.strip()) and self.state == "idle" \
+                and not self.in_call and not self.muted:
+            again = await asyncio.to_thread(self.stt.wake_recheck, audio)
+            rest = wake_phrase(again) if again else None
+            if rest is not None:
+                text = again
         if rest is None or self.in_call or self.state != "idle" or self.muted:
             if text and text.strip():  # what it heard instead, to tune the names it accepts
                 log.info("wake check: no (%r)", text.strip()[:60])
@@ -1222,6 +1237,15 @@ class Jarvis:
             result = Result(f"That didn't work: {str(e)[:80]}.", ok=False)
         if name in ("play_spotify", "play_youtube", "play_spotify_liked"):  # "start it" means this one
             self._last_play = {"tool": name, "args": dict(args), "ok": result.ok, "at": time.monotonic()}
+        if result.ok and name in _OPENS_WINDOW and self._remote_said is None:
+            # whatever was opened goes in front, never behind your window (17 Nov: "it should show on my
+            # screen, no background")
+            from .tools.front import surface, words_for
+
+            what = words_for(name, args)
+            if what:
+                self._last_opened = what
+                asyncio.create_task(asyncio.to_thread(surface, *what))
         return result
 
     async def _play_it(self) -> Result:

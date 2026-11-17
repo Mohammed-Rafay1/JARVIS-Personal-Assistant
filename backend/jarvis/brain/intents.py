@@ -16,7 +16,7 @@ class Intent:
 
 
 _WAKE = re.compile(r"^(?:(?:hey|hi|okay|ok|hello|yo|a)\s+)?(?:jarvis|jervis|travis|service|jarviss|jarvi|jarvas|"
-                   r"jervais|javis|jarwis|derivis|derivi|devis)\b[\s,.!]*")
+                   r"jervais|javis|jarwis|derivis|derivi|devis|jadvis|jardis|jarvish)\b[\s,.!]*")
 # Whisper's other spellings of "Jarvis" for this voice are also real names, so they are only dropped when a
 # command follows: "Davis, play Dilruba on Spotify" -> "play Dilruba on Spotify", but "Davis is late" stays.
 _WAKE_NAME_CMD = re.compile(
@@ -54,6 +54,10 @@ def normalize(text: str) -> str:
     t = re.sub(r"^(open|play|close|search|launch)(?:s|es)\b", r"\1", t)
     t = re.sub(r"^(open|close)(?:ed|d)\b", r"\1", t)   # "closed board", "opened the board": the past tense
     t = re.sub(r"^clothes?(?= (?:the |my |this |that )?(?:board|dashboard|overview|hud)\b)", "close", t)
+    # "Slows, Downloads." for "Close Downloads" on the headset (17 Nov): "close" heard as "slows"/"clothes"
+    t = re.sub(r"^(?:slows|clothes|clothe|closes?e)\b(?= \S)", "close", t)
+    # "open downloads folder from my laptop": where it is goes without saying
+    t = re.sub(r"\s+(?:from|on|in|of) (?:my|the|this) (?:laptop|computer|pc|system|machine|device)$", "", t)
     t = re.sub(r"^playing\b(?=.+\bon (?:spotify|youtube)$)", "play", t)
     # "Jarvis gave me an update about everything" (16 Nov, twice): "give me", heard in the past tense
     t = re.sub(r"^gave me\b", "give me", t)
@@ -83,10 +87,12 @@ STOP = re.compile(r"^(?:stop|stop talking|cancel|never ?mind|nothing|shut up|qui
 # "Hey Jarvis" as Whisper writes it for different accents. Names that are also real names (Travis, Davis)
 # only count after a greeting, so "Travis is late" never wakes it. The "hey" itself is often misheard
 # ("Edge Jarvis", 4 Nov), so any one short word before a clear "Jarvis" counts too.
-_NAME = r"(?:jarvis|jarviss|jarvi|jarvas|jervis|jervais|javis|jarwis|derivis|derivi|devis|dear ?wiz|dear ?viss)"
+_NAME = r"(?:jarvis|jarviss|jarvi|jarvas|jervis|jervais|javis|jarwis|derivis|derivi|devis|dear ?wiz|dear ?viss|" \
+        r"jadvis|jardis|jarvish|jervish)"   # "Hey, Jadvis." on the headset mic, 17 Nov
 WAKE_TEXT = re.compile(
     r"^\W*(?:(?:(?:hey|hi|hay|hey there|okay|ok|hello|yo|a|edge|hate|age|eh|aye)[\s,]+(?:" + _NAME[3:-1] +
-    r"|travis|davis|service|jerry|jarvey|jarvie|jarby|harvis|charvis|dervis|dervish|darvis|garvis|jarviz))"
+    r"|travis|davis|service|jerry|jarvey|jarvie|jarby|harvis|charvis|dervis|dervish|darvis|garvis|jarviz"
+    r"|dear[\s,]+this(?=\W*$)))"   # "Hey, dear, this." (17 Nov): only when nothing else was said
     r"|(?:[a-z']{1,8}[\s,]+)?" + _NAME + r")\b[\s,.!?]*(?P<rest>.*)$", re.I)
 
 

@@ -78,3 +78,36 @@ def test_default_devices_reads_windows_names():
     comtypes.CoInitialize()
     names = default_devices()
     assert names is None or (isinstance(names[0], str) and isinstance(names[1], str))
+
+
+def test_wake_as_heard_on_the_headset():
+    from jarvis.brain.intents import wake_phrase
+    assert wake_phrase("Hey, Jadvis.") == ""
+    assert wake_phrase("Hey, dear, this.") == ""
+    assert wake_phrase("Jadvis, open the board") == "open the board"
+    assert wake_phrase("hey dear this is my friend") is None   # ordinary speech stays ordinary
+
+
+def test_short_greetings_get_a_second_listen():
+    from jarvis.app import _MAYBE_WAKE
+    for heard in ("Hey, did we see you?", "Edge, Database,", "Edge, Address,", "Hey, dear, this."):
+        assert _MAYBE_WAKE.match(heard), heard
+    for heard in ("Can you listen to me?", "Hey, what are you doing tonight at the party with everyone?"):
+        assert not _MAYBE_WAKE.match(heard), heard
+
+
+def test_show_it_on_my_screen():
+    from jarvis.app import _SHOW_IT
+    for said in ("the youtube you opened in background i want to see the youtube page on my screen",
+                 "you have just opened the youtube in the background", "bring it to the front",
+                 "show it on my screen", "i can't see it"):
+        assert _SHOW_IT.search(said), said
+    for said in ("open youtube", "what's on my calendar", "show me my emails"):
+        assert not _SHOW_IT.search(said), said
+
+
+def test_front_words_for_tools():
+    from jarvis.tools.front import words_for
+    assert words_for("open_website", {"site": "youtube"}) == (["youtube"], True)
+    assert words_for("open_folder", {"name": "downloads"}) == (["downloads"], False)
+    assert words_for("close_app", {"name": "x"}) is None
