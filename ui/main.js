@@ -253,24 +253,39 @@ function createBoard() {
 }
 
 function showBoard(m) {
+  // a board page that crashed or never finished loading (18 Nov: four "open the board" requests, nothing on
+  // screen, until Jarvis restarted) is replaced rather than waited on for ever
+  if (board && (board.isDestroyed() || board.webContents.isCrashed())) { board = null; }
   if (!board) createBoard();
+  let shown = false;
   const reveal = () => {
-    if (!board) return;
+    if (!board || shown) return;
+    shown = true;
     board.setBounds(boardArea());
     if (m.focus) { board.show(); board.focus(); } else board.showInactive();
     board.webContents.send('board-view', m.view || 'all');
     win && win.setAlwaysOnTop(true, 'screen-saver');   // the orb stays on top of the board
+    log('board shown:', m.view || 'all', 'visible', board.isVisible(), JSON.stringify(board.getBounds()));
   };
-  if (board.webContents.isLoading()) board.webContents.once('did-finish-load', () => setTimeout(reveal, 60));
-  else reveal();
+  if (board.webContents.isLoading()) {
+    log('board: waiting for the page to load');
+    board.webContents.once('did-finish-load', () => setTimeout(reveal, 60));
+    setTimeout(() => {   // still not loaded after 4 s: show it anyway and load the page again
+      if (shown || !board) return;
+      log('board: page load stuck - reloading and showing it');
+      board.webContents.reload();
+      reveal();
+    }, 4000);
+  } else reveal();
 }
 
 ipcMain.on('board', (_e, m) => {
+  log('board request:', m && m.action, m && m.view);
   if (!m) return;
   if (m.action === 'show') showBoard(m);
   else if (m.action === 'hide' && board && board.isVisible()) board.webContents.send('board-leave');
 });
-ipcMain.on('board-hide', () => { if (board) board.hide(); });
+ipcMain.on('board-hide', () => { log('board hidden by the page'); if (board) board.hide(); });
 
 // right-click on the orb
 ipcMain.on('orb-menu', () => {
