@@ -63,3 +63,14 @@ def test_falls_back_to_whisper_when_parakeet_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "_load", lambda name, ct, th: f"whisper:{name}")
     s = S.STT("base.en", engine="parakeet", parakeet_dir=tmp_path / "nothing-here")
     assert s.parakeet is None and s.model == "whisper:base.en" and s.name == "base.en"
+
+
+def test_an_unanswered_old_question_does_not_block_jarvis(monkeypatch):
+    import time as _t
+    from jarvis.app import Jarvis
+    j = Jarvis.__new__(Jarvis)
+    j.state, j.in_call, j._remote_said, j.muted, j.task = "idle", False, None, False, None
+    j._pending, j._pending_at = {"kind": "board_walk"}, _t.monotonic() - 3600
+    assert j.is_quiet() and j.pending is None
+    j._pending, j._pending_at = {"kind": "board_walk"}, _t.monotonic()
+    assert not j.is_quiet()

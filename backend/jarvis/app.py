@@ -2117,6 +2117,7 @@ class Jarvis:
         held questions back for good), with nothing else waiting for an answer."""
         quiet = (self.state == "idle" and not self.in_call) or \
             (self.in_call and self.state == "listening" and not self.endpointer.started)
+        self._expire_pending()   # a question nobody answered mustn't hold Jarvis back for good
         return (quiet and self._remote_said is None and not self.muted
                 and (self.task is None or self.task.done()) and self.pending is None)
 
