@@ -29,7 +29,7 @@ DEFAULTS: dict[str, Any] = {
     "tts": {"engine": "auto", "piper_voice": "en_GB-alan-medium", "voice": "bm_george", "speed": 1.05},
     "speak_typed_replies": False,
     "greet_on_start": True,
-    "llm": {"enabled": True, "model": "qwen2.5:3b", "host": "http://127.0.0.1:11434",
+    "llm": {"enabled": True, "model": "qwen2.5:1.5b", "host": "http://127.0.0.1:11434",
             "keep_alive": "30m", "first_reply_seconds": 20, "gap_seconds": 15, "filler_after_seconds": 4},
     "music": {"default_service": "youtube"},
     "ducking": {"enabled": True, "level": 0.25},

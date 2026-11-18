@@ -152,7 +152,9 @@ def _asks_capabilities(t: str) -> bool:
 _BYE = re.compile(r"^(?:ok |okay |thanks |thank you )?(?:(?:bye|goodbye|good bye|bye bye|by by)(?: [\w'-]+){0,2}|"
                   r"buy (?:jarvis|jervis|javis|travis|service|services))$")
 # checking the line is open: answer, don't act
-_ACK = re.compile(r"^(?:listen to me|are you listening|are you listening to me|can you hear me|hear me|do you hear me|"
+# ("Can you listen me?" on 18 Nov went to the chat model, which was still loading: no answer at all)
+_ACK = re.compile(r"^(?:listen to me|listen me|are you listening|are you listening to me|can you hear me|hear me|"
+                  r"do you hear me|you hear me|you listening|you listening to me|listening to me|"
                   r"you there|are you there|hello|hi|hey|testing|test|mic test|listen)$")
 
 

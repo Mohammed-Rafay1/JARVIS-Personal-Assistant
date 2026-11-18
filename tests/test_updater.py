@@ -158,3 +158,9 @@ def test_a_correction_replaces_the_misheard_question():
     assert _CORRECTION.sub("", "I said, what do you know about Hitler?") == "what do you know about Hitler?"
     assert _CORRECTION.sub("", "No, I meant the weather in Lahore") == "the weather in Lahore"
     assert _CORRECTION.sub("", "I said yes") == "I said yes"          # too short to be a re-asked question
+
+
+def test_can_you_listen_me_is_the_mic_check():
+    from jarvis.brain.intents import parse
+    for said in ("Can you listen me?", "are you listening to me?", "can you hear me"):
+        assert parse(said).tool == "ack", said

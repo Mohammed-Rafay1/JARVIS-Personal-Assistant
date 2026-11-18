@@ -45,6 +45,8 @@ def system_prompt(address_as: str) -> str:
         "- Use a tool for any action on the computer, music, websites or email. "
         "Only call a tool when the user clearly asked for that action.\n"
         "- Do arithmetic carefully.\n"
+        "- If anyone could get hurt (weapons, violence, self-harm), say plainly: don't do it, and get help from "
+        "someone nearby or emergency services. Never treat it lightly.\n"
         "- You can only act through tools. Never say you did, are doing or activated something, or describe the "
         "computer's state, unless a tool result says so; if no tool fits, say you can't do that yet.\n"
         "- You cannot send email yourself; draft_email shows a draft that the user confirms.\n"
