@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -43,18 +44,49 @@ def _load(name: str, compute_type: str, threads: int):
         return WhisperModel(name, **kw)
 
 
+class _Parakeet:
+    """NVIDIA Parakeet TDT 0.6B v2 (int8, via sherpa-onnx). Measured 18 Nov on the user's own recordings mixed
+    with their room's background: 0.5% / 2.4% of words wrong at mild / moderate noise, against Whisper's 3.4% /
+    16.8%, and 1.0-1.4 s per sentence against 1.7-4.2 s (the Whisper re-check is no longer needed)."""
+
+    # its confidence (mean token log-probability) is ~0 for clear speech and -0.5 to -0.8 for noise and mumbles;
+    # scaled so the rest of Jarvis can keep Whisper's yardstick ("unsure" below -0.7)
+    SCALE = 1.4
+    DROP_BELOW = -0.75   # mean log-prob under this is background chatter or noise: heard as nothing
+
+    def __init__(self, folder: Path, threads: int) -> None:
+        import sherpa_onnx
+
+        f = Path(folder)
+        self.rec = sherpa_onnx.OfflineRecognizer.from_transducer(
+            encoder=str(f / "encoder.int8.onnx"), decoder=str(f / "decoder.int8.onnx"),
+            joiner=str(f / "joiner.int8.onnx"), tokens=str(f / "tokens.txt"), model_type="nemo_transducer",
+            num_threads=threads, decoding_method="greedy_search")
+
+    def run(self, audio: np.ndarray) -> tuple[str, float]:
+        """(text, mean token log-probability)."""
+        s = self.rec.create_stream()
+        s.accept_waveform(16000, np.ascontiguousarray(audio, dtype=np.float32))
+        self.rec.decode_stream(s)
+        lp = list(s.result.ys_log_probs or [])
+        return s.result.text.strip(), (float(np.mean(lp)) if lp else 0.0)
+
+
 class STT:
-    """Two-pass recognition. The fast model answers clear speech in ~1.5 s; when it is unsure
-    (low confidence, which on this laptop usually means an accent it mishears, like "Jarvis" ->
-    "Derivi"), the accurate model re-checks the same audio. Measured on the user's own clips."""
+    """Speech to text. With engine "parakeet" (the default since 18 Nov), one pass of NVIDIA Parakeet.
+    Otherwise Whisper in two passes: the fast model answers clear speech in ~1.5 s; when it is unsure (low
+    confidence, which on this laptop usually means an accent it mishears, like "Jarvis" -> "Derivi"), the
+    accurate model re-checks the same audio. Measured on the user's own clips."""
+
+    parakeet: _Parakeet | None = None   # set in __init__ when Parakeet is the engine
 
     def __init__(self, model: str = "base.en", compute_type: str = "int8", threads: int = 4,
-                 accurate_model: str = "", retry_below: float = -0.6, retry_max_seconds: float = 6.0) -> None:
+                 accurate_model: str = "", retry_below: float = -0.6, retry_max_seconds: float = 6.0,
+                 engine: str = "whisper", parakeet_dir: str | Path = "") -> None:
         t = time.perf_counter()
-        self.model = _load(model, compute_type, threads)
-        self.name = model
         self.prompt = ""
         self.accurate = None
+        self.parakeet: _Parakeet | None = None
         self.retry_below = retry_below
         # The re-check costs ~3x the fast pass and grows with length (8-20 s measured on long clips),
         # while long sentences carry enough context for the fast model. Only short ones are re-checked.
@@ -62,6 +94,18 @@ class STT:
         self.last_conf = 0.0
         # One decode at a time: two at once on this 4-core CPU made both 3-5x slower (13 s for "Jarvis,")
         self._busy = threading.Lock()
+        if engine == "parakeet" and parakeet_dir and (Path(parakeet_dir) / "encoder.int8.onnx").is_file():
+            try:
+                self.parakeet = _Parakeet(Path(parakeet_dir), threads)
+                self.model, self.name = None, "parakeet"
+                log.info("STT ready: parakeet (%.1fs)", time.perf_counter() - t)
+                return
+            except Exception as e:
+                log.warning("Parakeet unavailable (%s); using Whisper", e)
+        elif engine == "parakeet":
+            log.warning("Parakeet model not found in %s; using Whisper", parakeet_dir)
+        self.model = _load(model, compute_type, threads)
+        self.name = model
         log.info("STT ready: %s (%.1fs)", model, time.perf_counter() - t)
         if accurate_model and accurate_model != model:
             def load_accurate():  # in the background so startup stays fast
@@ -84,14 +128,36 @@ class STT:
                 log.info("quick check skipped: recogniser busy for %.0fs", wait)
             return ""  # a real request is being recognised; the idle wake check can skip this phrase
         try:
+            if self.parakeet is not None:
+                return self.parakeet.run(_trim(audio / peak * 0.9))[0]
             segments, _ = self._run(self.model, _trim(audio / peak * 0.9))
         finally:
             self._busy.release()
         return " ".join(s.text for s in segments if s.no_speech_prob < 0.6 and s.avg_logprob > -1.5).strip()
 
+    def _parakeet_text(self, audio: np.ndarray, raw: np.ndarray, peak: float, label: str) -> tuple[str, float]:
+        """One Parakeet pass with Jarvis's usual clean-up: noise dropped, confidence on Whisper's scale."""
+        t = time.perf_counter()
+        text, lp = self.parakeet.run(audio)
+        conf = lp * _Parakeet.SCALE if text else -9.0
+        if text and lp < _Parakeet.DROP_BELOW:
+            log.info("STT dropped as noise (%.2f): %r", lp, text)
+            text, conf = "", -9.0
+        self.last_conf = conf
+        log.info("%s %.2fs (parakeet, %.2f): %r", label, time.perf_counter() - t, lp, text)
+        if not text:
+            log.info("STT empty: %.1fs audio, peak %.3f", raw.size / 16000, peak)
+            _save_debug(raw, "empty")
+        if re.sub(r"[^a-z ]", "", text.lower()).strip() in _HALLUCINATIONS:
+            return "", -9.0
+        return text, conf
+
     def wake_recheck(self, audio: np.ndarray) -> str:
         """A second listen to a short "Hey ..." the fast pass couldn't place ("Hey, did we see you?", "Edge,
-        Database," on the headset, 17 Nov): the accurate model, told to expect "Hey Jarvis"."""
+        Database," on the headset, 17 Nov): the accurate model, told to expect "Hey Jarvis". (Whisper only:
+        Parakeet takes no hint, so a second listen would hear the same.)"""
+        if self.parakeet is not None:
+            return ""
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         if peak < 0.01 or not self._busy.acquire(timeout=1.0):
             return ""
@@ -135,7 +201,10 @@ class STT:
             peak = float(np.max(np.abs(audio)))
             if peak < 0.005:
                 return "", -9.0
+            raw = audio
             audio = _trim(audio / max(peak, 1e-3) * 0.9)
+            if self.parakeet is not None:   # already the most accurate recogniser here
+                return self._parakeet_text(audio, raw, peak, "STT careful")
             model, used = (self.accurate, "accurate") if self.accurate is not None else (self.model, self.name)
             prompt = self.COMMAND_WORDS + (" " + self.prompt if self.prompt else "")
             t = time.perf_counter()
@@ -178,6 +247,8 @@ class STT:
             _save_debug(raw, "quiet")
             return ""
         audio = _trim(audio / max(peak, 1e-3) * 0.9)
+        if self.parakeet is not None:
+            return self._parakeet_text(audio, raw, peak, "STT")[0]
         t = time.perf_counter()
         # no vad_filter: the endpointer already cut the utterance, and Silero would add ~0.4 s
         segments, conf = self._run(self.model, audio)

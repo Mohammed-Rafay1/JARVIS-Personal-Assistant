@@ -331,9 +331,12 @@ class Jarvis:
         self.ducker = Ducker(c["ducking"]["level"], c["ducking"]["enabled"])
 
         self._status("Loading speech recognition…")
+        from .config import ROOT
+
         self.stt = STT(c["stt"]["model"], c["stt"]["compute_type"], c["stt"]["threads"],
                        c["stt"].get("accurate_model", ""), float(c["stt"].get("retry_below", -0.6)),
-                       float(c["stt"].get("retry_max_seconds", 6)))
+                       float(c["stt"].get("retry_max_seconds", 6)), engine=c["stt"].get("engine", "whisper"),
+                       parakeet_dir=ROOT / c["stt"].get("parakeet_model", ""))
         # Whisper's prompt is short, so put the words people actually say first (an alphabetical
         # app list left out "Spotify" and it heard "Supportify")
         installed = {a.lower(): a for a in CTX.apps.names()}
@@ -341,7 +344,7 @@ class Jarvis:
                "Teams", "VS Code", "Gmail", "Notepad", "Calculator", "File Explorer", "Downloads", "WhatsApp"]
         extra = [a for a in installed.values() if len(a) < 20 and a not in key][:25]
         self.stt.set_vocabulary(key + list(CTX.contacts)[:15] + extra)
-        health["speech"] = c["stt"]["model"]
+        health["speech"] = self.stt.name
 
         L = c["listening"]
         self.endpointer = Endpointer(L["vad_aggressiveness"], L["silence_ms"], L["max_seconds"],

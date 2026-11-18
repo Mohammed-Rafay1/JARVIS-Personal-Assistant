@@ -1,4 +1,4 @@
-"""Fetch the offline models Jarvis needs (~250 MB). Safe to re-run; skips what's already there."""
+"""Fetch the offline models Jarvis needs (~750 MB). Safe to re-run; skips what's already there."""
 from __future__ import annotations
 
 import sys
@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from jarvis.config import MODELS, load_config  # noqa: E402
 
 KOKORO = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+PARAKEET = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 SPEAKER = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
            "wespeaker_en_voxceleb_resnet34.onnx")
 
@@ -39,7 +40,21 @@ def main() -> None:
     openwakeword.utils.download_models([cfg["wake_word"]["model"]])
     print("  ok")
 
-    print(f"Speech recognition (Whisper {cfg['stt']['model']}):")
+    print("Speech recognition (NVIDIA Parakeet TDT 0.6B, ~480 MB download):")
+    folder = MODELS / PARAKEET
+    if (folder / "encoder.int8.onnx").is_file():
+        print("  ok")
+    else:
+        import tarfile
+
+        archive = MODELS / f"{PARAKEET}.tar.bz2"
+        fetch(f"https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/{PARAKEET}.tar.bz2", archive)
+        with tarfile.open(archive) as tar:
+            tar.extractall(MODELS, filter="data")
+        archive.unlink()
+        print("  ok")
+
+    print(f"Speech recognition backup (Whisper {cfg['stt']['model']}):")
     from faster_whisper import WhisperModel
 
     WhisperModel(cfg["stt"]["model"], device="cpu", compute_type="int8", download_root=str(MODELS / "whisper"))

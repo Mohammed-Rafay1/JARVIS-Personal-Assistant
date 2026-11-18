@@ -52,7 +52,10 @@ call:                        # "Hey Jarvis" opens a full-screen call that keeps 
   rethink_min_rms: 1800      # how loud speech must be to interrupt Jarvis while it's thinking (raise if other voices interrupt it)
 
 stt:
-  model: base.en             # fast first pass
+  engine: parakeet           # parakeet = NVIDIA Parakeet TDT 0.6B (18 Nov: ~7x fewer mistakes in room noise and
+                             # 2-3x faster than Whisper on your recordings) | whisper = the two settings below
+  parakeet_model: "data/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
+  model: base.en             # Whisper (used if Parakeet is missing): fast first pass
   accurate_model: small.en   # re-checks only when the fast pass is unsure (accents, names); "" to turn off
   retry_below: -0.6          # confidence below which the re-check runs (lower = fewer re-checks, faster)
   retry_max_seconds: 6       # longer clips skip the re-check (it took 8-20 s on them); clear commands always skip it
