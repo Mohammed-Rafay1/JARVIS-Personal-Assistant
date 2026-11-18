@@ -75,7 +75,7 @@ llm:
   model: qwen2.5:1.5b        # 18 Nov: 3x faster than qwen2.5:3b on this laptop (12 vs 4-6 words-pieces/s,
                              # one RAM stick limits it), answers as good on the tests; no gaps mid-reply
   host: http://127.0.0.1:11434
-  keep_alive: 8h             # unloads from RAM (~2.3 GB) after this much idle time; reloading costs ~25 s on the next question
+  keep_alive: 8h             # unloads from RAM (~1.1 GB) after this much idle time; reloading costs ~10 s on the next question
   first_reply_seconds: 20    # give up (and say so) if the answer hasn't started by then; +25 s when the model is still loading
   filler_after_seconds: 4    # say "Just a moment, sir." if the answer is slower than this
   temperature: 0.6           # conversation liveliness: lower = more predictable, higher = chattier

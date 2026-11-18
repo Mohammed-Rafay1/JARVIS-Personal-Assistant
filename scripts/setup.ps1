@@ -24,7 +24,7 @@ Write-Host "`n[4/5] Ollama (local language model)" -ForegroundColor Cyan
 $ollama = "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe"
 if (-not (Test-Path $ollama)) { winget install --id Ollama.Ollama -e --silent --accept-package-agreements --accept-source-agreements }
 $model = (Select-String -Path config.yaml -Pattern '^\s+model:\s*(qwen\S+|llama\S+|phi\S+|gemma\S+)' | Select-Object -First 1).Matches.Groups[1].Value
-if (-not $model) { $model = "qwen2.5:3b" }
+if (-not $model) { $model = "qwen2.5:1.5b" }
 & $ollama pull $model
 
 Write-Host "`n[5/5] Self-test" -ForegroundColor Cyan

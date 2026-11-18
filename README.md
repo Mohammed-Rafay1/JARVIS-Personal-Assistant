@@ -37,8 +37,8 @@ git pull origin rafay
 | | |
 |---|---|
 | Windows 10 or 11 (64-bit) | Jarvis drives Windows apps, so it's Windows only |
-| 8 GB RAM or more (16 GB recommended) | the language model uses about 2.3 GB while loaded |
-| About 5 GB of free disk | speech models ~1.2 GB, language model ~1.9 GB, plus packages |
+| 8 GB RAM or more (16 GB recommended) | the language model uses about 1.1 GB while loaded |
+| About 5 GB of free disk | speech models ~1.9 GB, language model ~1 GB, plus packages |
 | A microphone and speakers | a headset works best in noisy rooms |
 | **Python 3.12** | `winget install Python.Python.3.12` |
 | **Node.js LTS** | `winget install OpenJS.NodeJS.LTS` |
@@ -61,7 +61,7 @@ This:
 1. creates the Python environment (`.venv`) and installs the packages
 2. installs the on-screen overlay (`ui`) and the WhatsApp bridge (`whatsapp-bridge`)
 3. downloads the offline models: wake word, speech recognition, voice
-4. installs [Ollama](https://ollama.com) and downloads the language model (`qwen2.5:3b`)
+4. installs [Ollama](https://ollama.com) and downloads the language model (`qwen2.5:1.5b`)
 5. runs a self-test and prints a fix for anything that's broken
 
 ## 4. Start it
@@ -110,7 +110,7 @@ Open `config.yaml` in any text editor, change what you like, save, and restart J
 | `email.vip`, `email.quiet_hours` | Which new emails are announced, and when |
 | `claude_code.*` | Claude Code tasks: on/off, background or terminal, what it may run (see below) |
 | `whatsapp_remote.*` | Commands from your phone (see below) |
-| `stt.model` | `small.en` recognises better but is about 2× slower |
+| `stt.engine` | `parakeet` (default) hears best and fastest; `whisper` uses `stt.model` instead |
 | `tts.engine` | `kokoro` is the most natural voice, but about 6× slower than the default Piper |
 | `speak_typed_replies` | Typed commands get silent, on-screen replies, which is handy in meetings. `true` speaks them. |
 
@@ -206,7 +206,7 @@ start_jarvis.bat --selftest
 ## 10. How it works
 
 ```
-Mic ─► wake word ("Hey Jarvis") ─► end-of-speech detection ─► Whisper (speech → text)
+Mic ─► wake word ("Hey Jarvis") ─► end-of-speech detection ─► Parakeet (speech → text)
                                                                     │
             intent engine (instant, handles most commands) ◄────────┤
             local LLM via Ollama (questions, chat, email writing) ◄─┘
@@ -242,7 +242,7 @@ Measured on an Intel i5-10310U with 16 GB RAM:
 
 | Step | Time |
 |---|---|
-| Speech recognition (Whisper base.en) | ~1.4 s per command |
+| Speech recognition (NVIDIA Parakeet TDT 0.6B; Whisper as backup) | ~0.4–1 s per command |
 | Voice (Piper) | ~0.3 s per sentence; repeated phrases are cached |
-| Language model answer (qwen2.5:3b) | ~1.5 s to start when warm; 10–60 s for the first question after a long idle |
-| Memory | ~0.6 GB, plus ~2.3 GB while the language model is loaded |
+| Language model answer (qwen2.5:1.5b) | first sentence in ~1.5–2.5 s when warm, writing ~10–13 tokens/s; ~10 s for the first question after a long idle |
+| Memory | ~1.3 GB, plus ~1.1 GB while the language model is loaded |
