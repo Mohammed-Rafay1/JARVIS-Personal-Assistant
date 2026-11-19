@@ -40,7 +40,11 @@ listening:
   no_speech_timeout: 5       # give up if you say nothing after waking it
   follow_up_seconds: 6       # after Jarvis asks you something (send it? which file?), answer without the wake word
   follow_up_after_chat: false # also keep listening when a chat answer ends in a question (noisy rooms: keep off)
-  vad_aggressiveness: 2      # 0-3, higher ignores more background noise
+  vad: silero                # who decides you're speaking while Jarvis listens: silero (19 Nov: caught 75% of your
+                             # speech vs 47%, cut you off in 2/25 clips vs 11/25) | webrtc
+  vad_model: "data/models/vad/silero_vad.onnx"
+  vad_threshold: 0.5         # Silero: lower hears quieter speech, higher ignores more noise
+  vad_aggressiveness: 2      # WebRTC VAD (idle listening, and the fallback): 0-3, higher ignores more noise
 
 call:                        # "Hey Jarvis" opens a full-screen call that keeps listening
   first_timeout: 8           # end quietly if nothing is said right after waking (accidental wake)

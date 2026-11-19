@@ -10,11 +10,39 @@ SUB = 320  # 20 ms sub-frames for webrtcvad
 FRAME_MS = FRAME * 1000 // SAMPLE_RATE
 
 
+class SileroGate:
+    """Silero VAD v6 (via sherpa-onnx): is this 80 ms frame speech? Measured 19 Nov on the user's recordings with
+    room noise mixed in: 75% of their speech caught at every noise level (WebRTC VAD: 46-48%), cut off mid-sentence
+    in 2 of 25 clips (WebRTC: 11-12), and it always noticed the end of the sentence (WebRTC missed it 10-13 times
+    in noise). ~5-10 ms of CPU per frame, so it runs only while Jarvis is listening to you."""
+
+    def __init__(self, model: str, threshold: float = 0.5) -> None:
+        import sherpa_onnx
+
+        cfg = sherpa_onnx.VadModelConfig()
+        cfg.silero_vad.model, cfg.silero_vad.threshold = str(model), threshold
+        cfg.silero_vad.min_silence_duration, cfg.silero_vad.min_speech_duration = 0.08, 0.05
+        cfg.silero_vad.window_size = 512
+        cfg.sample_rate, cfg.num_threads = SAMPLE_RATE, 1
+        self.v = sherpa_onnx.VoiceActivityDetector(cfg, buffer_size_in_seconds=30)
+
+    def __call__(self, frame: np.ndarray) -> bool:
+        self.v.accept_waveform(frame.astype(np.float32) / 32768.0)
+        speech = bool(self.v.is_speech_detected())
+        while not self.v.empty():   # the finished segments aren't needed: only the live yes/no
+            self.v.pop()
+        return speech
+
+    def reset(self) -> None:
+        self.v.reset()
+
+
 class Endpointer:
     """Feed 80 ms frames; reports when an utterance has started and ended."""
 
     def __init__(self, aggressiveness: int = 2, silence_ms: int = 700, max_seconds: float = 12,
-                 no_speech_timeout: float = 5, short_silence_ms: int = 0) -> None:
+                 no_speech_timeout: float = 5, short_silence_ms: int = 0, neural: SileroGate | None = None) -> None:
+        self.neural = neural   # Silero decides speech when set; WebRTC VAD + a loudness gate otherwise
         self.vad = webrtcvad.Vad(aggressiveness)
         self.silence_frames = max(1, silence_ms // FRAME_MS)
         # People pause after "Jarvis," or "Send a text to..." before the rest. While only a word or two
@@ -39,6 +67,8 @@ class Endpointer:
         self.last_speech = False  # whether the last frame sounded like speech (before the voice check)
         self.last_voice = 0       # how many frames in, your last word ended
         self.others = 0           # frames of someone else talking (voiceprint said not you)
+        if getattr(self, "neural", None) is not None:
+            self.neural.reset()
 
     def observe_idle(self, frame: np.ndarray) -> None:
         rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
@@ -51,6 +81,9 @@ class Endpointer:
 
     def _is_speech(self, frame: np.ndarray) -> bool:
         rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+        if self.neural is not None:
+            said = self.neural(frame)   # fed every frame, so it keeps its sense of what came before
+            return said and rms >= 100.0   # never digital silence
         if rms < max(150.0, self.noise_floor * 1.8):
             return False
         pcm = frame.tobytes()

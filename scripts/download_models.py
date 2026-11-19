@@ -12,6 +12,7 @@ from jarvis.config import MODELS, load_config  # noqa: E402
 
 KOKORO = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 PARAKEET = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
+SILERO = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
 SPEAKER = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
            "wespeaker_en_voxceleb_resnet34.onnx")
 
@@ -53,6 +54,9 @@ def main() -> None:
             tar.extractall(MODELS, filter="data")
         archive.unlink()
         print("  ok")
+
+    print("Speech detection (Silero VAD v6):")
+    fetch(SILERO, MODELS / "vad" / "silero_vad.onnx")
 
     print(f"Speech recognition backup (Whisper {cfg['stt']['model']}):")
     from faster_whisper import WhisperModel

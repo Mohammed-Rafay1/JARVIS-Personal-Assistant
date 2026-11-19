@@ -347,8 +347,18 @@ class Jarvis:
         health["speech"] = self.stt.name
 
         L = c["listening"]
+        neural = None   # Silero VAD while listening to you (19 Nov: far fewer cut-offs than WebRTC VAD)
+        model = ROOT / L.get("vad_model", "data/models/vad/silero_vad.onnx")
+        if L.get("vad", "silero") == "silero" and model.is_file():
+            try:
+                from .audio.vad import SileroGate
+
+                neural = SileroGate(model, float(L.get("vad_threshold", 0.5)))
+                health["vad"] = "silero"
+            except Exception as e:
+                log.warning("Silero VAD unavailable (%s); using WebRTC VAD", e)
         self.endpointer = Endpointer(L["vad_aggressiveness"], L["silence_ms"], L["max_seconds"],
-                                     L["no_speech_timeout"], int(L.get("short_silence_ms", 0)))
+                                     L["no_speech_timeout"], int(L.get("short_silence_ms", 0)), neural=neural)
         # short phrases heard while idle, for the Whisper "Hey Jarvis" backup
         self.wake_vad = Endpointer(L["vad_aggressiveness"], 450, 3.6, 10**6)
         if c["wake_word"]["enabled"]:
@@ -453,6 +463,7 @@ class Jarvis:
         threading.Thread(target=self._audio_loop, daemon=True, name="audio").start()
         asyncio.create_task(self._speech_worker())
         asyncio.create_task(self._telemetry())
+        asyncio.create_task(self._keep_priority())
 
         health["brain"] = "ready" if await self.llm.ensure_running() else "offline (commands still work)"
         if health["brain"] == "ready":
@@ -844,6 +855,18 @@ class Jarvis:
         sir = self.cfg["address_as"]
         await self.say(_greeting_lines(sir) if full else _short_greeting(sir), then_idle=False)
         self._start_capture(self._listen_timeout())
+
+    async def _keep_priority(self) -> None:
+        """Every couple of minutes: Jarvis and Ollama's runner at above-normal priority, out of efficiency mode
+        (Ollama starts a new runner process whenever it reloads the model)."""
+        from .priority import boost_priority
+
+        while True:
+            try:
+                await asyncio.to_thread(boost_priority)
+            except Exception as e:
+                log.debug("priority: %s", e)
+            await asyncio.sleep(120)
 
     async def _telemetry(self) -> None:
         """Real numbers for the call screen's HUD, sent only while a call is open."""
