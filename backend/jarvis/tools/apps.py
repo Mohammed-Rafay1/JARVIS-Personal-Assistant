@@ -33,10 +33,14 @@ class AppIndex:
 
     def refresh(self) -> None:
         t = time.perf_counter()
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-StartApps | ConvertTo-Json -Compress"],
-            capture_output=True, text=True, encoding="utf-8", creationflags=NO_WINDOW, timeout=30)
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-StartApps | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, encoding="utf-8", creationflags=NO_WINDOW, timeout=60)
+        except subprocess.TimeoutExpired:   # a busy startup (20 Nov): keep the saved list, try next time
+            log.warning("app index: Start menu list took over 60 s; keeping the saved %d apps", len(self.apps))
+            return
         items = json.loads(out.stdout or "[]")
         if isinstance(items, dict):
             items = [items]
@@ -211,6 +215,21 @@ def _close_tab(name: str) -> bool:
     u32.keybd_event(0x11, 0, 2, 0)
     log.info("closed browser tab: %s", site)
     return True
+
+
+def sounds_like_recent(said: str, recent: list[str]) -> str | None:
+    """'close portified' / 'close spotty first' right after Jarvis opened Spotify (20 Nov): the app it opened whose
+    name sounds closest. Only for a close that matched nothing, and only among apps Jarvis itself opened."""
+    q = re.sub(r"[^a-z]", "", said.lower())
+    best, score = None, 0.0
+    for name in recent:
+        n = re.sub(r"[^a-z]", "", name.lower())
+        if not q or not n:
+            continue
+        s = max(fuzz.ratio(q, n), fuzz.ratio(q[:len(n) + 2], n))   # "spottyfirst": its start is the name
+        if s > score:
+            best, score = name, s
+    return best if score >= 55 else None
 
 
 @tool("Close an open application window or folder window by name (the app may ask to save work)",

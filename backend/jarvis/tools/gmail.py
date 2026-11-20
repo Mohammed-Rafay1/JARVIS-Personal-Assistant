@@ -562,6 +562,30 @@ async def start_reply(m: dict) -> Result:
                   pending={"kind": "reply_text", "msg": m})
 
 
+_NAME_GAP = re.compile(r"\[[^\]\n]{0,40}\b(?:name|sender|recipient|contact|person)\b[^\]\n]{0,40}\]", re.I)
+
+
+def clean_reply(body: str, first: str) -> str:
+    """The small chat model sometimes ignores "no subject line, no placeholders" (20 Nov: "Subject: Re: Urgent...
+    Dear [Sender's First Name],"): the subject line goes, a name gap gets the sender's first name, other gaps go."""
+    lines = [ln for ln in body.strip().splitlines() if not re.match(r"^\s*\**subject\s*:", ln, re.I)]
+    # a line that is only a gap ("[Your Name]" under "Best regards,"): the signature is added separately
+    lines = [ln for ln in lines if not re.fullmatch(r"\s*\[[^\]\n]{1,60}\]\s*", ln)]
+    text = "\n".join(lines).strip()
+    # "Dear [Sender's First Name]," -> "Dear Kiran," (or "Hi," when there's no name)
+    greet = re.compile(r"(?im)^(\s*(?:dear|hi|hello|hey))\s*\[[^\]\n]*\]")
+    text = greet.sub(rf"\g<1> {first}" if first else "Hi", text)
+    if first:
+        text = _NAME_GAP.sub(first, text)
+    # "I'll confirm by [date]": you decide that, so "shortly"
+    text = re.sub(r"(?i)\s+(?:by|on|at|before|until)\s+\[[^\]\n]{1,60}\]", " shortly", text)
+    text = re.sub(r"\[[^\]\n]{1,60}\]", "", text)   # any other gap is left out
+    text = re.sub(r"[ \t]+([,.!?])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 async def compose_reply(m: dict, instruction: str, original: str | None = None) -> str:
     """Write the reply body from the user's spoken instruction (their words if the LLM is unavailable)."""
     sig = CTX.cfg.get("email", {}).get("signature", "")
@@ -585,8 +609,9 @@ async def compose_reply(m: dict, instruction: str, original: str | None = None) 
                 "professional sentences, no subject line, no signature, no placeholders.",
                 f"Sender first name: {first}\nTheir email (subject: {m['subject']}):\n{original[:1500]}\n\n"
                 f"The user's instruction for the reply: {instruction}", max_tokens=220)
-            if body.strip():
-                return body.strip() + (f"\n\n{sig}" if sig else "")
+            body = clean_reply(body, first)
+            if body:
+                return body + (f"\n\n{sig}" if sig else "")
         except Exception as e:
             log.warning("reply compose failed: %s", e)
     if auto:   # no language model: a short holding reply rather than the instruction itself

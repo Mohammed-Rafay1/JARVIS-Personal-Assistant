@@ -18,7 +18,7 @@ from . import tools
 from .audio import earcons
 from .audio.meter import levels
 from .audio.mic import SAMPLE_RATE as MIC_SR
-from .brain.intents import BOARD_TOOLS, NO, STOP, YES, Intent, normalize, parse, parse_choice
+from .brain.intents import BOARD_TOOLS, NO, STOP, YES, Intent, is_goodbye, normalize, parse, parse_choice
 from .services import board as board_words
 from .config import load_contacts
 from .tools import CTX, office
@@ -224,6 +224,7 @@ class Jarvis:
         self._offered_at = 0.0
         self._declined = False        # "not now" to the update on offer: don't ask again for that one
         self._last_opened: tuple[list[str], bool] | None = None   # "show it on my screen" brings this back
+        self._recent_opened: list[tuple[str, float]] = []   # (name, when) of apps/sites opened: a misheard "close"
         self._reply_msgs: tuple[list, float] | None = None         # the emails waiting for a reply, last listed
         self.last_heard = 0.0         # when you last said or typed something (Jarvis doesn't speak up over you)
         # up to five exchanges (trimmed in _chat): enough to hold a conversation, quick on this CPU
@@ -1068,6 +1069,13 @@ class Jarvis:
             await self.say(self._last_reply, then_idle=not waiting, follow=waiting)
             return
         self._expire_pending()
+        if self.pending and is_goodbye(t):
+            # "Bye, Jairis." after "Shall I send it?" (20 Nov) was taken as an edit to the email draft: a goodbye
+            # is never an answer. The question is dropped (nothing is sent) and the call ends.
+            log.info("goodbye while %s was waiting: dropped", self.pending.get("kind"))
+            if self.pending.get("kind") == "reply_board" and self.board is not None:
+                self.board.replies._asking = False
+            self.pending = None
         if self.pending:
             handled = await self._handle_pending(t, text)
             if handled:
@@ -1306,6 +1314,21 @@ class Jarvis:
             result = Result(f"That didn't work: {str(e)[:80]}.", ok=False)
         if name in ("play_spotify", "play_youtube", "play_spotify_liked"):  # "start it" means this one
             self._last_play = {"tool": name, "args": dict(args), "ok": result.ok, "at": time.monotonic()}
+        if name in ("open_app", "open_website") and result.ok:
+            said = str(args.get("name") or args.get("site") or "")
+            now = time.monotonic()
+            self._recent_opened = [(n, at) for n, at in self._recent_opened if n != said and now - at < 1800]
+            self._recent_opened.append((said, now))
+        if name == "close_app" and not result.ok and args.get("name"):
+            from .tools.apps import sounds_like_recent
+
+            now = time.monotonic()
+            guess = sounds_like_recent(args["name"], [n for n, at in self._recent_opened if now - at < 1800])
+            if guess and guess.lower() != str(args["name"]).lower():
+                log.info("close %r: nothing by that name; closing %r, opened recently", args["name"], guess)
+                retry = await t.func(name=guess)
+                if retry.ok:
+                    result = retry
         if name in ("check_email", "emails_to_reply") and result.ok and self.board is not None \
                 and self.board.enabled and self._remote_said is None:
             # asked about your emails: the board, with a drafted reply to each one waiting for yours (17 Nov)

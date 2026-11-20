@@ -42,6 +42,8 @@ def normalize(text: str) -> str:
     t = re.sub(r"\s*\b(?:for me|on my behalf)\b", "", t)    # "open youtube for me on chrome"
     t = re.sub(r"\b(can|could|would|will) u\b", r"\1 you", t)  # typed shorthand: "can u send an email"
     t = re.sub(r"\bwhat'?s ?app\b", "whatsapp", t)  # Whisper's spelling of WhatsApp (not "what's up")
+    # "dropped an email for me" (20 Nov) was "draft an email for me"
+    t = re.sub(r"^(?:dropped|drafted|drop) (an?|the|new|a new) (e-?mail|mail|reply)\b", r"draft \1 \2", t)
     for _ in range(4):  # "so, jarvis, can you play..." peels off in layers
         new = _POLITE_POST.sub("", _POLITE_PRE.sub("", _WAKE.sub("", _WAKE_NAME_CMD.sub("", t)))).strip()
         if new == t:
@@ -150,7 +152,14 @@ def _asks_capabilities(t: str) -> bool:
 
 # Short "bye <anything>": Whisper spells "Jarvis" many ways for different accents ("bye derivi", "bye dear-wiz")
 _BYE = re.compile(r"^(?:ok |okay |thanks |thank you )?(?:(?:bye|goodbye|good bye|bye bye|by by)(?: [\w'-]+){0,2}|"
-                  r"buy (?:jarvis|jervis|javis|travis|service|services))$")
+                  r"buy (?:jarvis|jervis|javis|travis|service|services)|"
+                  r"by (?:j[\w'-]*|travis|davis|service|services))$")   # "Okay, by James." (20 Nov)
+
+
+def is_goodbye(t: str) -> bool:
+    """You're done talking ("bye Jarvis", "goodbye", "okay, by James"): ends the call, whatever was being asked."""
+    return bool(_BYE.match(t)) or t in ("bye", "goodbye", "good bye", "bye bye", "bye for now", "end call",
+                                        "end the call", "hang up", "see you", "see you later")
 # checking the line is open: answer, don't act
 # ("Can you listen me?" on 18 Nov went to the chat model, which was still loading: no answer at all)
 _ACK = re.compile(r"^(?:listen to me|listen me|are you listening|are you listening to me|can you hear me|hear me|"
