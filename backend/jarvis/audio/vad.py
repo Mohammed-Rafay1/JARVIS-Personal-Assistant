@@ -81,10 +81,13 @@ class Endpointer:
 
     def _is_speech(self, frame: np.ndarray) -> bool:
         rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+        loud_enough = rms >= max(150.0, self.noise_floor * 1.8)   # you at the mic, above the room's usual noise
         if self.neural is not None:
+            # Silero hears any voice, also people across the room or a fan it takes for one: on 19 Nov it kept
+            # listening 9 s to the room and heard no words. It decides what is speech; loudness decides it's you.
             said = self.neural(frame)   # fed every frame, so it keeps its sense of what came before
-            return said and rms >= 100.0   # never digital silence
-        if rms < max(150.0, self.noise_floor * 1.8):
+            return said and loud_enough
+        if not loud_enough:
             return False
         pcm = frame.tobytes()
         votes = sum(self.vad.is_speech(pcm[i * SUB * 2:(i + 1) * SUB * 2], SAMPLE_RATE)

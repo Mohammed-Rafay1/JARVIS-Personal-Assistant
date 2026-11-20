@@ -293,7 +293,7 @@ def _save_debug(audio: np.ndarray, tag: str) -> None:
 
     d = DATA / "debug"
     d.mkdir(parents=True, exist_ok=True)
-    for old in sorted(d.glob("*.wav"))[:-4]:
+    for old in sorted(d.glob("*.wav"), key=lambda p: p.stat().st_mtime)[:-4]:   # by age: names are times of day
         old.unlink(missing_ok=True)
     with wave.open(str(d / f"{time.strftime('%H%M%S')}_{tag}.wav"), "wb") as w:
         w.setnchannels(1)

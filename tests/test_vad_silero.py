@@ -32,7 +32,9 @@ def test_a_whole_recorded_sentence_is_one_utterance():
         pytest.skip("no recordings")
     for p in lines:
         ep = Endpointer(2, 600, 40, 5, 1000, neural=SileroGate(MODEL))
-        a = np.concatenate([np.zeros(4000, np.float32), _load(p), np.zeros(16000, np.float32)])
+        v = _load(p)
+        v = v / max(float(np.percentile(np.abs(v), 99.5)), 1e-3) * 0.35   # stored quiet; live you peak ~0.35-0.6
+        a = np.concatenate([np.zeros(4000, np.float32), v, np.zeros(16000, np.float32)])
         states = [ep.feed(f) for f in _frames(a)]
         assert "done" in states, p.name
         done_at = states.index("done") * 0.08
@@ -46,6 +48,22 @@ def test_silence_and_hum_never_start_a_sentence():
     hum = (0.05 * np.sin(2 * np.pi * 100 * t)).astype(np.float32)
     states = [ep.feed(f) for f in _frames(hum)]
     assert "speaking" not in states and states[-1] == "timeout"
+
+
+@need
+def test_a_voice_across_the_room_is_not_you():
+    """19 Nov: Silero took the room's noise for speech and listened 9 s to it. Speech must also be louder than the
+    room (1.8x its usual level), as it was with WebRTC."""
+    rng = np.random.default_rng(0)
+    t = np.arange(16000 * 6) / 16000
+    # a voice-like murmur (pitch harmonics, syllable rhythm) at the room's own level
+    murmur = sum(np.sin(2 * np.pi * f * t) / k for k, f in enumerate((140, 280, 420, 560), 1))
+    murmur = murmur * (0.5 + 0.5 * np.sin(2 * np.pi * 4 * t)) + rng.normal(0, 0.05, t.size)
+    murmur = (murmur / np.sqrt(np.mean(murmur ** 2)) * 0.09).astype(np.float32)   # ~3000 int16 rms, as at 14:42
+    ep = Endpointer(2, 600, 40, 3, 1000, neural=SileroGate(MODEL))
+    ep.noise_floor = 3000.0   # learned while the murmur was already going
+    states = [ep.feed(f) for f in _frames(murmur)]
+    assert "timeout" in states or ep.audio().size / 16000 < 1.5
 
 
 @need
